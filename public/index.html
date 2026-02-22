@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kids Internet Access</title>
+    <meta name="theme-color" content="#0d0f14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="KidsNet">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon.svg">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
@@ -443,6 +449,31 @@
         }
         .btn.skip-btn:hover { background: rgba(239, 68, 68, 0.07); }
 
+        /* Per-kid today's activity mini-log */
+        .kid-log {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding-top: 2px;
+        }
+
+        .kid-log-entry {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            color: #444;
+            gap: 6px;
+        }
+
+        .kid-log-entry .kle-time { flex-shrink: 0; color: #383e47; }
+        .kid-log-entry .kle-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .kle-allow  { color: #2d7a50; }
+        .kle-block  { color: #7a3535; }
+        .kle-timed  { color: #7a6030; }
+        .kle-neutral{ color: #444; }
+
         /* Toast */
         .toast {
             position: fixed;
@@ -480,6 +511,7 @@
         <div class="header-nav">
             <div class="header-info" id="headerInfo">Connecting...</div>
             <a class="nav-link" href="/schedule">Schedules</a>
+            <a class="nav-link" href="/log">Log</a>
         </div>
     </div>
 
@@ -504,13 +536,10 @@
                 oninput="selectCustom(this)">
         </div>
 
-        <div class="timed-row">
+        <div class="timed-row" id="timedStartRow">
             <span class="label">Start:</span>
             <button class="btn amber" onclick="startAllTimed()">All Kids</button>
-            <button class="btn" onclick="startOneTimed(1728781019)">Tristan</button>
-            <button class="btn" onclick="startOneTimed(1730164046)">Lydia</button>
-            <button class="btn" onclick="startOneTimed(1732587090)">Nadia</button>
-            <button class="btn" onclick="startOneTimed(1733352318)">Katrina</button>
+            <!-- per-kid buttons populated dynamically from homeRules -->
         </div>
     </div>
 
@@ -530,6 +559,62 @@
     <script>
         let homeRules = [];
         let autoRefreshInterval = null;
+        let timedButtonsRendered = false;
+        let kidLogs = {};        // tracker → [{ ts, action, details }]
+        let kidMinutesToday = {}; // tracker → total timed minutes granted today
+
+        const LOG_ACTION_META = {
+            'toggle-allow':    { label: 'Allowed',       cls: 'kle-allow' },
+            'toggle-block':    { label: 'Blocked',       cls: 'kle-block' },
+            'timed-allow':     { label: 'Timed',         cls: 'kle-timed' },
+            'timer-expired':   { label: 'Timer ended',   cls: 'kle-block' },
+            'timer-cancel':    { label: 'Timer cancel',  cls: 'kle-neutral' },
+            'schedule-allow':  { label: 'Sched allow',   cls: 'kle-allow' },
+            'schedule-block':  { label: 'Sched block',   cls: 'kle-block' },
+            'schedule-toggle': { label: 'Sched toggle',  cls: 'kle-neutral' },
+            'skip-next':       { label: 'Skip next',     cls: 'kle-block' },
+            'skip-cancel':     { label: 'Skip cancel',   cls: 'kle-neutral' },
+        };
+
+        function renderTimedButtons() {
+            const row = document.getElementById('timedStartRow');
+            if (!row) return;
+            // Remove previous kid buttons (keep label span + All Kids btn)
+            while (row.children.length > 2) row.removeChild(row.lastChild);
+            homeRules.forEach(kid => {
+                const btn = document.createElement('button');
+                btn.className = 'btn';
+                btn.textContent = kid.name;
+                btn.onclick = () => startOneTimed(kid.tracker);
+                row.appendChild(btn);
+            });
+        }
+
+        async function fetchKidLogs() {
+            try {
+                const res = await fetch('/api/log');
+                if (!res.ok) return;
+                const data = await res.json();
+                const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+                const freshLogs = {};
+                const freshMins = {};
+                for (const entry of (data.log || [])) {
+                    if (!entry.kid || entry.ts < todayStart.getTime()) continue;
+                    const rule = homeRules.find(r => r.name === entry.kid);
+                    if (!rule) continue;
+                    // Accumulate timed-allow minutes
+                    if (entry.action === 'timed-allow') {
+                        const m = parseInt(entry.details) || 0;
+                        freshMins[rule.tracker] = (freshMins[rule.tracker] || 0) + m;
+                    }
+                    if (!LOG_ACTION_META[entry.action]) continue;
+                    if (!freshLogs[rule.tracker]) freshLogs[rule.tracker] = [];
+                    if (freshLogs[rule.tracker].length < 4) freshLogs[rule.tracker].push(entry);
+                }
+                kidLogs = freshLogs;
+                kidMinutesToday = freshMins;
+            } catch { /* silent */ }
+        }
 
         function showToast(message, isError = false) {
             const toast = document.createElement('div');
@@ -561,6 +646,11 @@
                 const data = await response.json();
                 homeRules = data.rules || [];
                 updateConnectionStatus(true);
+                if (!timedButtonsRendered) {
+                    renderTimedButtons();
+                    timedButtonsRendered = true;
+                }
+                await fetchKidLogs();
                 renderKids();
             } catch (err) {
                 console.error('Failed to fetch home rules:', err);
@@ -616,6 +706,32 @@
                     : (schedOn && (kid.scheduleActive || kid.scheduleNextStart)
                         ? `<button class="btn skip-btn" onclick="skipNext(${kid.tracker})">Skip Next</button>`
                         : '');
+                const logs = kidLogs[kid.tracker] || [];
+                const minsToday = kidMinutesToday[kid.tracker] || 0;
+                const hasActivity = logs.length > 0 || minsToday > 0;
+                const totalLabel = minsToday > 0
+                    ? (minsToday >= 60
+                        ? `${Math.floor(minsToday/60)}h ${minsToday%60 ? minsToday%60+'m' : ''}`.trim()
+                        : `${minsToday}m`)
+                    : null;
+                const logHtml = hasActivity ? `
+                    <div class="kid-divider"></div>
+                    <div class="kid-log">
+                        <div class="kid-log-entry" style="margin-bottom:3px;">
+                            <span class="kle-time">Today</span>
+                            <span class="kle-label kle-timed">${totalLabel ? totalLabel + ' timed' : 'no timed access'}</span>
+                        </div>
+                        ${logs.map(e => {
+                            const m = LOG_ACTION_META[e.action] || { label: e.action, cls: 'kle-neutral' };
+                            const t = new Date(e.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+                            const detail = e.details ? ` · ${e.details}` : '';
+                            return `<div class="kid-log-entry">
+                                <span class="kle-time">${t}</span>
+                                <span class="kle-label ${m.cls}">${m.label}${detail}</span>
+                            </div>`;
+                        }).join('')}
+                    </div>` : '';
+
                 return `
                 <div class="kid-card ${cardState}">
                     <div class="kid-name">${kid.name}</div>
@@ -663,6 +779,7 @@
                     ${schedInfoRow}
                     ${skipRow}
                     ${timerRow}
+                    ${logHtml}
                 </div>`;
             }).join('');
         }
@@ -833,6 +950,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             fetchHomeRules();
             autoRefreshInterval = setInterval(fetchHomeRules, 5000);
+            if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
         });
 
         window.addEventListener('beforeunload', () => {

@@ -136,8 +136,38 @@ const activeTimers = new Map();
 // ============================================================================
 const activeSkips = new Map();
 
+// ============================================================================
+// Audit Log — in-memory, newest first, capped at 200 entries
+// ============================================================================
+const actionLog = [];
+
+function logAction(action, kid, details) {
+  actionLog.unshift({ ts: Date.now(), action, kid: kid || null, details: details || null });
+  if (actionLog.length > 200) actionLog.length = 200;
+}
+
+// ============================================================================
+// ntfy.sh Push Notifications — set NTFY_URL in .env to enable
+// e.g. NTFY_URL=https://ntfy.sh/my-topic
+// ============================================================================
+async function sendNotif(title, body) {
+  const url = process.env.NTFY_URL;
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Title': title, 'Content-Type': 'text/plain' },
+      body
+    });
+  } catch (err) {
+    console.error('ntfy notification failed:', err.message);
+  }
+}
+
 async function blockKidNow(tracker) {
+  const timerData = activeTimers.get(tracker);
   activeTimers.delete(tracker);
+  const kidName = timerData?.kidName || String(tracker);
   try {
     // If the app schedule is currently active and not skipped, don't re-block
     const info = computeScheduleInfo(String(tracker));
@@ -145,6 +175,7 @@ async function blockKidNow(tracker) {
     const skipActive = skipUntil && Date.now() < skipUntil;
     if (info.enabled && info.active && !skipActive) {
       console.log(`Timer expired: tracker=${tracker} is in schedule window — not re-blocking`);
+      logAction('timer-expired', kidName, 'Timer ended — in schedule window, not re-blocked');
       return;
     }
     const res = await pfsenseApiCall('/api/v2/firewall/rules');
@@ -152,6 +183,8 @@ async function blockKidNow(tracker) {
     if (rule && rule.disabled) {
       await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: rule.id, disabled: false });
       await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+      logAction('timer-expired', kidName, 'Timer ended — blocked');
+      sendNotif('Timer Expired', `${kidName}'s internet timer ended — now blocked`);
     }
   } catch (err) {
     console.error(`Timer expired: failed to re-block tracker=${tracker}:`, err.message);
@@ -241,15 +274,20 @@ async function enforceSchedules() {
         await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: blockRule.id, disabled: true });
         needsApply = true;
         console.log(`Schedule: allowing ${kid.name}`);
+        logAction('schedule-allow', kid.name, 'Schedule window opened');
+        sendNotif('Schedule', `${kid.name} — internet allowed (schedule window opened)`);
       } else if (!shouldBeAllowed && kidIsAllowed) {
         // Should be blocked but is allowed — enable block rule
         await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: blockRule.id, disabled: false });
         needsApply = true;
         if (skipActive) {
           console.log(`Skip: blocking ${kid.name} until ${new Date(skipUntil).toLocaleTimeString()}`);
+          logAction('schedule-block', kid.name, `Skipped until ${new Date(skipUntil).toLocaleTimeString()}`);
         } else {
           console.log(`Schedule: blocking ${kid.name}`);
+          logAction('schedule-block', kid.name, 'Schedule window closed');
         }
+        sendNotif('Schedule', `${kid.name} — internet blocked`);
       }
     }
 
@@ -271,6 +309,16 @@ app.get('/health', (req, res) => {
 // Schedule config page
 app.get('/schedule', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'schedule.html'));
+});
+
+// Activity log page
+app.get('/log', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'log.html'));
+});
+
+// GET /api/log — return audit log
+app.get('/api/log', (_req, res) => {
+  res.json({ success: true, log: actionLog });
 });
 
 // ============================================================================
@@ -337,6 +385,8 @@ app.post('/api/home/rules/:tracker/toggle', async (req, res) => {
     await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
 
     const blockEnabled = !newDisabledState;
+    logAction(blockEnabled ? 'toggle-block' : 'toggle-allow', configRule.name,
+      blockEnabled ? 'Manually blocked' : 'Manually allowed');
     res.json({
       success: true,
       tracker,
@@ -365,6 +415,7 @@ app.post('/api/home/rules/:tracker/toggle-schedule', async (req, res) => {
     enforceSchedules().catch(err => console.error('Enforcement after toggle:', err.message));
 
     const scheduleEnabled = scheduleConfig[key].enabled;
+    logAction('schedule-toggle', configRule.name, `Schedule ${scheduleEnabled ? 'enabled' : 'disabled'}`);
     res.json({
       success: true,
       tracker,
@@ -395,6 +446,7 @@ app.post('/api/home/allow-all', async (req, res) => {
     }
 
     if (changed > 0) await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+    logAction('allow-all', null, `${changed} kids allowed`);
     res.json({ success: true, changed, message: 'All kids are now ALLOWED' });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error', message: err.message });
@@ -419,6 +471,7 @@ app.post('/api/home/block-all', async (req, res) => {
     }
 
     if (changed > 0) await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+    logAction('block-all', null, `${changed} kids blocked`);
     res.json({ success: true, changed, message: 'All kids are now BLOCKED' });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error', message: err.message });
@@ -458,6 +511,7 @@ app.put('/api/schedules', (req, res) => {
     }
     scheduleConfig = incoming;
     saveSchedules();
+    logAction('schedules-saved', null, `${Object.keys(incoming).length} kids updated`);
     enforceSchedules().catch(err => console.error('Enforcement after save:', err.message));
     res.json({ success: true, message: 'Schedules saved' });
   } catch (err) {
@@ -516,6 +570,7 @@ app.post('/api/home/rules/:tracker/timed-allow', async (req, res) => {
     const endTime = Date.now() + minutes * 60 * 1000;
     const timeoutId = setTimeout(() => blockKidNow(tracker), minutes * 60 * 1000);
     activeTimers.set(tracker, { timeoutId, endTime, kidName: configRule.name });
+    logAction('timed-allow', configRule.name, `${minutes} min`);
 
     res.json({
       success: true, tracker, name: configRule.name, minutes, endTime,
@@ -554,6 +609,9 @@ app.post('/api/home/allow-all-timed', async (req, res) => {
     }
 
     await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+    for (const configRule of CONFIG.HOME_RULES) {
+      logAction('timed-allow', configRule.name, `${minutes} min`);
+    }
     res.json({ success: true, minutes, endTime, message: `All kids allowed for ${minutes} min` });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error', message: err.message });
@@ -567,6 +625,7 @@ app.post('/api/home/rules/:tracker/cancel-timer', async (req, res) => {
     const existing = activeTimers.get(tracker);
     if (existing) {
       clearTimeout(existing.timeoutId);
+      logAction('timer-cancel', existing.kidName, 'Timer cancelled manually');
       activeTimers.delete(tracker);
     }
     await blockKidNow(tracker);
@@ -610,6 +669,8 @@ app.post('/api/home/rules/:tracker/skip-next', async (req, res) => {
     enforceSchedules().catch(err => console.error('Enforcement after skip:', err.message));
 
     const until = new Date(skipUntil).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    logAction('skip-next', configRule.name, `Skipped until ${until}`);
+    sendNotif('Skip', `${configRule.name}'s next window skipped until ${until}`);
     res.json({ success: true, tracker, name: configRule.name, skipUntil,
       message: `${configRule.name}'s next window skipped until ${until}` });
   } catch (err) {
@@ -621,7 +682,9 @@ app.post('/api/home/rules/:tracker/skip-next', async (req, res) => {
 app.post('/api/home/rules/:tracker/cancel-skip', async (req, res) => {
   try {
     const tracker = parseInt(req.params.tracker, 10);
+    const skipRule = CONFIG.HOME_RULES.find(r => r.tracker === tracker);
     activeSkips.delete(tracker);
+    logAction('skip-cancel', skipRule?.name || String(tracker), 'Skip cancelled');
     enforceSchedules().catch(err => console.error('Enforcement after skip cancel:', err.message));
     res.json({ success: true, message: 'Skip cancelled' });
   } catch (err) {

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Activity Log — Kids Internet</title>
+    <meta name="theme-color" content="#0d0f14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="KidsNet">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0d0f14;
+            color: #e0e0e0;
+            font-family: 'Barlow', sans-serif;
+            line-height: 1.6;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #1a1f28;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .back-link {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #555;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: color 200ms;
+        }
+        .back-link:hover { color: #e0e0e0; }
+
+        .header-divider { width: 1px; height: 20px; background: #2a3038; }
+
+        .header-title h1 {
+            font-size: 22px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .nav-link {
+            font-family: 'Barlow', sans-serif;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #555;
+            text-decoration: none;
+            padding: 6px 12px;
+            border: 1px solid #2a3038;
+            border-radius: 4px;
+            transition: all 200ms;
+        }
+        .nav-link:hover { color: #e0e0e0; border-color: #3a4048; background: #1a1f28; }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .refresh-info {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            color: #444;
+        }
+
+        /* Log entries */
+        .log-list {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .log-entry {
+            display: grid;
+            grid-template-columns: 90px 80px 140px 1fr;
+            gap: 12px;
+            align-items: center;
+            padding: 8px 12px;
+            background: #16191f;
+            border: 1px solid #1a1f28;
+            border-radius: 4px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+        }
+
+        .log-time { color: #555; white-space: nowrap; }
+        .log-kid  { color: #e0e0e0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .log-action { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; padding: 3px 7px; border-radius: 3px; text-align: center; }
+        .log-details { color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        /* Action color classes */
+        .action-allow      { background: rgba(34,197,94,0.12);  color: #22c55e; }
+        .action-block      { background: rgba(239,68,68,0.10);   color: #ef4444; }
+        .action-timed      { background: rgba(245,158,11,0.12);  color: #f59e0b; }
+        .action-neutral    { background: rgba(100,100,100,0.12); color: #888; }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 12px;
+            color: #333;
+        }
+
+        @media (max-width: 540px) {
+            .log-entry { grid-template-columns: 70px 70px 1fr; gap: 8px; }
+            .log-details { display: none; }
+            body { padding: 12px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div class="header-left">
+            <a class="back-link" href="/">&#8592; Kids Internet</a>
+            <div class="header-divider"></div>
+            <div class="header-title"><h1>Activity Log</h1></div>
+        </div>
+        <div class="header-right">
+            <span class="refresh-info" id="refreshInfo">Auto-refresh 10s</span>
+            <a class="nav-link" href="/schedule">Schedules</a>
+        </div>
+    </div>
+
+    <!-- Today's totals by kid -->
+    <div id="todaySummary" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;"></div>
+
+    <div id="logList" class="log-list">
+        <div class="empty-state">Loading...</div>
+    </div>
+
+    <script>
+        const ACTION_META = {
+            'toggle-allow':    { label: 'ALLOWED',       cls: 'action-allow' },
+            'toggle-block':    { label: 'BLOCKED',       cls: 'action-block' },
+            'timed-allow':     { label: 'TIMED ALLOW',   cls: 'action-timed' },
+            'timed-allow-all': { label: 'TIMED ALL',     cls: 'action-timed' },
+            'timer-expired':   { label: 'TIMER END',     cls: 'action-block' },
+            'timer-cancel':    { label: 'TIMER CANCEL',  cls: 'action-neutral' },
+            'allow-all':       { label: 'ALLOW ALL',     cls: 'action-allow' },
+            'block-all':       { label: 'BLOCK ALL',     cls: 'action-block' },
+            'schedule-allow':  { label: 'SCHED ALLOW',  cls: 'action-allow' },
+            'schedule-block':  { label: 'SCHED BLOCK',  cls: 'action-block' },
+            'schedule-toggle': { label: 'SCHED TOGGLE', cls: 'action-neutral' },
+            'schedules-saved': { label: 'SCHED SAVED',  cls: 'action-neutral' },
+            'skip-next':       { label: 'SKIP NEXT',    cls: 'action-block' },
+            'skip-cancel':     { label: 'SKIP CANCEL',  cls: 'action-neutral' },
+        };
+
+        function relTime(ts) {
+            const diff = Date.now() - ts;
+            if (diff < 5000)      return 'just now';
+            if (diff < 60000)     return `${Math.floor(diff / 1000)}s ago`;
+            if (diff < 3600000)   return `${Math.floor(diff / 60000)}m ago`;
+            if (diff < 86400000)  return `${Math.floor(diff / 3600000)}h ago`;
+            return new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
+        }
+
+        function absTime(ts) {
+            return new Date(ts).toLocaleString([], {
+                month: 'short', day: 'numeric',
+                hour: 'numeric', minute: '2-digit', second: '2-digit'
+            });
+        }
+
+        function renderLog(entries) {
+            const el = document.getElementById('logList');
+            if (!entries.length) {
+                el.innerHTML = '<div class="empty-state">No activity yet</div>';
+                return;
+            }
+            el.innerHTML = entries.map(e => {
+                const meta = ACTION_META[e.action] || { label: e.action.toUpperCase(), cls: 'action-neutral' };
+                return `
+                <div class="log-entry">
+                    <span class="log-time" title="${absTime(e.ts)}">${relTime(e.ts)}</span>
+                    <span class="log-kid">${e.kid || '—'}</span>
+                    <span class="log-action ${meta.cls}">${meta.label}</span>
+                    <span class="log-details">${e.details || ''}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function fmtMins(m) {
+            if (m <= 0) return '0m';
+            return m >= 60
+                ? `${Math.floor(m/60)}h ${m%60 ? m%60+'m' : ''}`.trim()
+                : `${m}m`;
+        }
+
+        function renderSummary(entries) {
+            const todayStart = new Date(); todayStart.setHours(0,0,0,0);
+            const totals = {}; // kid name → minutes
+            for (const e of entries) {
+                if (e.action !== 'timed-allow' || !e.kid || e.ts < todayStart.getTime()) continue;
+                const m = parseInt(e.details) || 0;
+                totals[e.kid] = (totals[e.kid] || 0) + m;
+            }
+            const el = document.getElementById('todaySummary');
+            if (!Object.keys(totals).length) { el.innerHTML = ''; return; }
+            el.innerHTML = Object.entries(totals).map(([name, mins]) => `
+                <div style="
+                    background:#16191f;border:1px solid #1a1f28;border-radius:4px;
+                    padding:8px 14px;font-family:'Share Tech Mono',monospace;font-size:11px;">
+                    <span style="color:#555;font-size:9px;display:block;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Today</span>
+                    <span style="color:#e0e0e0;font-weight:700;">${name}</span>
+                    <span style="color:#f59e0b;margin-left:10px;">${fmtMins(mins)} timed</span>
+                </div>`).join('');
+        }
+
+        async function fetchLog() {
+            try {
+                const res = await fetch('/api/log');
+                if (!res.ok) throw new Error();
+                const data = await res.json();
+                const entries = data.log || [];
+                renderSummary(entries);
+                renderLog(entries);
+                document.getElementById('refreshInfo').textContent =
+                    'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+            } catch {
+                document.getElementById('refreshInfo').textContent = 'Error fetching log';
+            }
+        }
+
+        fetchLog();
+        setInterval(fetchLog, 10000);
+
+        if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+    </script>
+</body>
+</html>
