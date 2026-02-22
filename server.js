@@ -19,12 +19,8 @@ const CONFIG = {
   API_KEY: process.env.PFSENSE_API_KEY,
   // HOME (opt2) interface — these are BLOCK rules.
   // blockEnabled=true → kid is BLOCKED; blockEnabled=false → kid is ALLOWED outside schedule.
-  HOME_RULES: [
-    { tracker: 1728781019, name: 'Tristan', scheduleTracker: 1728780997 },
-    { tracker: 1730164046, name: 'Lydia',   scheduleTracker: 1730164014 },
-    { tracker: 1732587090, name: 'Nadia',   scheduleTracker: 1732057261 },
-    { tracker: 1733352318, name: 'Katrina', scheduleTracker: 1733352282 }
-  ]
+  // Loaded from HOME_RULES env var as JSON array: [{ tracker, name, scheduleTracker }, ...]
+  HOME_RULES: JSON.parse(process.env.HOME_RULES || '[]')
 };
 
 // ============================================================================
@@ -34,23 +30,9 @@ const CONFIG = {
 // ============================================================================
 const SCHEDULES_FILE = path.join(__dirname, 'schedules.json');
 
-const DEFAULT_SCHEDULES = {
-  '1728781019': { enabled: true, windows: [
-    { days: [0,1,2,3,4,5,6], start: '15:30', end: '17:30' }
-  ]},
-  '1730164046': { enabled: true, windows: [
-    { days: [0,1,2,3,4,5,6], start: '11:15', end: '11:45' },
-    { days: [0,1,2,3,4,5,6], start: '15:30', end: '17:30' }
-  ]},
-  '1732587090': { enabled: true, windows: [
-    { days: [0,1,2,3,4,5,6], start: '11:15', end: '11:45' },
-    { days: [0,1,2,3,4,5,6], start: '15:30', end: '17:30' }
-  ]},
-  '1733352318': { enabled: true, windows: [
-    { days: [0,1,2,3,4,5,6], start: '11:15', end: '11:45' },
-    { days: [0,1,2,3,4,5,6], start: '15:30', end: '17:30' }
-  ]}
-};
+const DEFAULT_SCHEDULES = Object.fromEntries(
+  CONFIG.HOME_RULES.map(r => [String(r.tracker), { enabled: false, windows: [] }])
+);
 
 function loadSchedules() {
   try {
