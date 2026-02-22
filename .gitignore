@@ -3,3 +3,5 @@ node_modules/
 *.log
 npm-debug.log*
 .DS_Store
+.claude/settings.local.json
+schedules.json

@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schedule Config — Kids Internet</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: #0d0f14;
+            color: #e0e0e0;
+            font-family: 'Barlow', sans-serif;
+            line-height: 1.6;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        /* ── Header ── */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #1a1f28;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .back-link {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #555;
+            text-decoration: none;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: color 200ms;
+        }
+        .back-link:hover { color: #e0e0e0; }
+
+        .back-arrow {
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        .header-divider {
+            width: 1px;
+            height: 20px;
+            background: #2a3038;
+        }
+
+        .header-title h1 {
+            font-size: 22px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .save-status {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            color: #555;
+        }
+        .save-status.saved { color: #22c55e; }
+        .save-status.unsaved { color: #f59e0b; }
+
+        /* ── Buttons ── */
+        .btn {
+            padding: 10px 18px;
+            background: #1a1f28;
+            border: 1px solid #2a3038;
+            color: #e0e0e0;
+            cursor: pointer;
+            font-family: 'Barlow', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-radius: 4px;
+            transition: all 200ms ease;
+        }
+        .btn:hover { background: #252d35; border-color: #3a4048; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        .btn.primary { color: #22c55e; border-color: #22c55e; }
+        .btn.primary:hover { background: rgba(34,197,94,0.1); }
+
+        .btn.danger { color: #ef4444; border-color: rgba(239,68,68,0.5); }
+        .btn.danger:hover { background: rgba(239,68,68,0.08); }
+
+        .btn.amber { color: #f59e0b; border-color: #f59e0b; }
+        .btn.amber:hover { background: rgba(245,158,11,0.1); }
+
+        .btn.sm {
+            padding: 6px 12px;
+            font-size: 11px;
+        }
+
+        /* ── Global controls bar ── */
+        .global-bar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 24px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .global-bar .label {
+            font-size: 11px;
+            color: #555;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        /* ── Kid sections ── */
+        .kid-section {
+            background: #16191f;
+            border: 1px solid #1a1f28;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 12px;
+        }
+
+        .kid-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .kid-name {
+            font-size: 15px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+        }
+
+        /* ── Toggle Switch ── */
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .toggle {
+            position: relative;
+            display: inline-block;
+            width: 46px;
+            height: 24px;
+        }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: #374047;
+            transition: 0.3s;
+            border-radius: 24px;
+            border: 1px solid #2a3038;
+        }
+        .toggle-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px; width: 18px;
+            left: 2px; bottom: 2px;
+            background: #555;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+        input:checked + .toggle-slider { background: #22c55e; border-color: #16a34a; }
+        input:checked + .toggle-slider:before { transform: translateX(22px); background: #fff; }
+
+        .toggle-label {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            min-width: 24px;
+        }
+
+        /* ── Schedule Windows ── */
+        .windows-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .window-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            padding: 10px 12px;
+            background: #0d0f14;
+            border: 1px solid #1a1f28;
+            border-radius: 4px;
+        }
+
+        /* ── Day Pills ── */
+        .day-pills {
+            display: flex;
+            gap: 3px;
+        }
+
+        .day-pill {
+            width: 26px;
+            height: 26px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            cursor: pointer;
+            user-select: none;
+            border: 1px solid #2a3038;
+            background: #1a1f28;
+            color: #444;
+            transition: all 120ms;
+        }
+        .day-pill:hover { border-color: #3a4048; color: #888; }
+        .day-pill.active {
+            background: rgba(34,197,94,0.15);
+            border-color: rgba(34,197,94,0.5);
+            color: #22c55e;
+        }
+
+        /* ── Time inputs ── */
+        .time-sep {
+            color: #444;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .time-input {
+            padding: 5px 8px;
+            background: #1a1f28;
+            border: 1px solid #2a3038;
+            color: #e0e0e0;
+            border-radius: 4px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 13px;
+            width: 98px;
+            transition: border-color 200ms;
+        }
+        .time-input:focus {
+            outline: none;
+            border-color: rgba(34,197,94,0.4);
+        }
+        /* Style the time picker chrome on dark backgrounds */
+        .time-input::-webkit-calendar-picker-indicator {
+            filter: invert(0.5);
+            cursor: pointer;
+        }
+
+        .win-delete {
+            background: none;
+            border: none;
+            color: #333;
+            cursor: pointer;
+            font-size: 15px;
+            line-height: 1;
+            padding: 2px 4px;
+            margin-left: auto;
+            transition: color 150ms;
+        }
+        .win-delete:hover { color: #ef4444; }
+
+        /* ── Empty-windows hint ── */
+        .no-windows {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+            color: #444;
+            padding: 8px 0;
+        }
+
+        /* ── Add window button ── */
+        .add-win-btn {
+            font-size: 11px;
+            padding: 6px 14px;
+            color: #444;
+            border-color: #1e2530;
+            background: transparent;
+        }
+        .add-win-btn:hover:not(:disabled) { color: #22c55e; border-color: rgba(34,197,94,0.3); background: rgba(34,197,94,0.05); }
+        .add-win-btn:disabled { color: #2a3038; border-color: #1a1f28; }
+
+        /* ── Footer / Save bar ── */
+        .footer-bar {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #1a1f28;
+        }
+
+        /* ── Toast ── */
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            padding: 14px 22px;
+            background: #16191f;
+            border: 1px solid #22c55e;
+            border-radius: 4px;
+            color: #22c55e;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 12px;
+            z-index: 1000;
+            animation: slideInUp 0.3s ease;
+        }
+        .toast.error { border-color: #ef4444; color: #ef4444; }
+        @keyframes slideInUp {
+            from { transform: translateY(50px); opacity: 0; }
+            to   { transform: translateY(0);    opacity: 1; }
+        }
+
+        @media (max-width: 540px) {
+            .window-row { gap: 8px; }
+            .day-pills { gap: 2px; }
+            .day-pill { width: 24px; height: 24px; font-size: 9px; }
+            .time-input { width: 86px; font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div class="header-left">
+            <a class="back-link" href="/">
+                <span class="back-arrow">&#8592;</span>
+                Kids Internet
+            </a>
+            <div class="header-divider"></div>
+            <div class="header-title">
+                <h1>Schedule Config</h1>
+            </div>
+        </div>
+        <div class="save-status" id="saveStatus">Loading...</div>
+    </div>
+
+    <!-- Global controls -->
+    <div class="global-bar">
+        <span class="label">All schedules:</span>
+        <button class="btn sm primary" onclick="enableAll()">Enable All</button>
+        <button class="btn sm danger" onclick="disableAll()">Disable All</button>
+    </div>
+
+    <!-- Kid schedule sections rendered here -->
+    <div id="kidList">
+        <div style="text-align:center;color:#444;padding:40px;font-family:'Share Tech Mono',monospace;font-size:12px;">
+            Loading schedules...
+        </div>
+    </div>
+
+    <!-- Save footer -->
+    <div class="footer-bar">
+        <button class="btn amber" id="saveBtn" onclick="saveSchedules()">Save Changes</button>
+    </div>
+
+    <script>
+        // ── Constants ───────────────────────────────────────────────
+        const DAY_LABELS = ['Su', 'M', 'T', 'W', 'Th', 'F', 'Sa'];
+        const MAX_WINDOWS = 3;
+
+        // ── State ────────────────────────────────────────────────────
+        let kids = [];         // [{ tracker, name }]
+        let draft = {};        // tracker → { enabled, windows: [...] }  (local edit draft)
+        let savedState = '';   // JSON string of last-saved config (for dirty detection)
+
+        // ── Helpers ──────────────────────────────────────────────────
+        function showToast(msg, isError = false) {
+            const t = document.createElement('div');
+            t.className = `toast${isError ? ' error' : ''}`;
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(() => {
+                t.style.animation = 'slideInUp 0.3s ease reverse';
+                setTimeout(() => t.remove(), 300);
+            }, 3000);
+        }
+
+        function markDirty() {
+            const current = JSON.stringify(draft);
+            const dirty = current !== savedState;
+            const el = document.getElementById('saveStatus');
+            el.textContent = dirty ? '● Unsaved changes' : '✓ Saved';
+            el.className = 'save-status ' + (dirty ? 'unsaved' : 'saved');
+        }
+
+        // ── Fetch ────────────────────────────────────────────────────
+        async function loadSchedules() {
+            try {
+                const res = await fetch('/api/schedules');
+                const data = await res.json();
+                kids = data.kids.map(k => ({ tracker: k.tracker, name: k.name }));
+                draft = {};
+                for (const k of data.kids) {
+                    draft[k.tracker] = JSON.parse(JSON.stringify(k.config));
+                }
+                savedState = JSON.stringify(draft);
+                render();
+                markDirty();
+            } catch (e) {
+                document.getElementById('saveStatus').textContent = 'Error loading';
+                console.error('Failed to load schedules:', e);
+            }
+        }
+
+        // ── Render ───────────────────────────────────────────────────
+        function render() {
+            document.getElementById('kidList').innerHTML = kids.map(kid => {
+                const cfg = draft[kid.tracker] || { enabled: false, windows: [] };
+                const winHtml = cfg.windows.length === 0
+                    ? `<div class="no-windows">No windows — kid is always blocked when schedule is on.</div>`
+                    : cfg.windows.map((w, i) => renderWindow(kid.tracker, i, w)).join('');
+                const canAdd = cfg.windows.length < MAX_WINDOWS;
+
+                return `
+                <div class="kid-section">
+                    <div class="kid-header">
+                        <span class="kid-name">${kid.name}</span>
+                        <div class="toggle-row">
+                            <label class="toggle">
+                                <input type="checkbox" ${cfg.enabled ? 'checked' : ''}
+                                    onchange="toggleEnabled('${kid.tracker}', this.checked)">
+                                <span class="toggle-slider"></span>
+                            </label>
+                            <span class="toggle-label" id="lbl-${kid.tracker}"
+                                style="color:${cfg.enabled ? '#22c55e' : '#555'}">
+                                ${cfg.enabled ? 'On' : 'Off'}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="windows-list" id="wins-${kid.tracker}">${winHtml}</div>
+                    <button class="btn add-win-btn" ${canAdd ? '' : 'disabled'}
+                        onclick="addWindow('${kid.tracker}')">
+                        + Add Window ${cfg.windows.length > 0 ? `(${cfg.windows.length}/${MAX_WINDOWS})` : ''}
+                    </button>
+                </div>`;
+            }).join('');
+        }
+
+        function renderWindow(tracker, idx, win) {
+            const pills = DAY_LABELS.map((lbl, d) => {
+                const on = win.days.includes(d);
+                return `<span class="day-pill${on ? ' active' : ''}"
+                    id="pill-${tracker}-${idx}-${d}"
+                    onclick="toggleDay('${tracker}',${idx},${d})">${lbl}</span>`;
+            }).join('');
+
+            return `
+            <div class="window-row" id="win-row-${tracker}-${idx}">
+                <div class="day-pills">${pills}</div>
+                <input type="time" class="time-input" value="${win.start}"
+                    onchange="setTime('${tracker}',${idx},'start',this.value)">
+                <span class="time-sep">–</span>
+                <input type="time" class="time-input" value="${win.end}"
+                    onchange="setTime('${tracker}',${idx},'end',this.value)">
+                <button class="win-delete" onclick="removeWindow('${tracker}',${idx})" title="Remove window">&#x2715;</button>
+            </div>`;
+        }
+
+        // ── Edit actions (update draft, re-render minimally) ─────────
+        function toggleEnabled(tracker, checked) {
+            draft[tracker].enabled = checked;
+            const lbl = document.getElementById(`lbl-${tracker}`);
+            if (lbl) {
+                lbl.textContent = checked ? 'On' : 'Off';
+                lbl.style.color = checked ? '#22c55e' : '#555';
+            }
+            markDirty();
+        }
+
+        function toggleDay(tracker, winIdx, dayNum) {
+            const win = draft[tracker].windows[winIdx];
+            const pos = win.days.indexOf(dayNum);
+            if (pos >= 0) {
+                win.days.splice(pos, 1);
+            } else {
+                win.days.push(dayNum);
+                win.days.sort((a, b) => a - b);
+            }
+            // Surgical DOM update — just toggle the pill class
+            const pill = document.getElementById(`pill-${tracker}-${winIdx}-${dayNum}`);
+            if (pill) pill.classList.toggle('active', win.days.includes(dayNum));
+            markDirty();
+        }
+
+        function setTime(tracker, winIdx, field, value) {
+            draft[tracker].windows[winIdx][field] = value;
+            markDirty();
+        }
+
+        function addWindow(tracker) {
+            if (draft[tracker].windows.length >= MAX_WINDOWS) return;
+            draft[tracker].windows.push({ days: [1,2,3,4,5], start: '15:30', end: '17:30' });
+            render();
+            markDirty();
+        }
+
+        function removeWindow(tracker, idx) {
+            draft[tracker].windows.splice(idx, 1);
+            render();
+            markDirty();
+        }
+
+        // ── Global controls ──────────────────────────────────────────
+        async function enableAll() {
+            try {
+                const res = await fetch('/api/schedules/enable-all', { method: 'POST' });
+                if (!res.ok) throw new Error();
+                showToast('All schedules enabled');
+                await loadSchedules();
+            } catch { showToast('Failed', true); }
+        }
+
+        async function disableAll() {
+            try {
+                const res = await fetch('/api/schedules/disable-all', { method: 'POST' });
+                if (!res.ok) throw new Error();
+                showToast('All schedules disabled');
+                await loadSchedules();
+            } catch { showToast('Failed', true); }
+        }
+
+        // ── Save ─────────────────────────────────────────────────────
+        async function saveSchedules() {
+            const btn = document.getElementById('saveBtn');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+            try {
+                const res = await fetch('/api/schedules', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(draft)
+                });
+                if (!res.ok) throw new Error('Save failed');
+                savedState = JSON.stringify(draft);
+                markDirty();
+                showToast('Schedules saved');
+            } catch (e) {
+                showToast('Failed to save schedules', true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save Changes';
+            }
+        }
+
+        // ── Init ─────────────────────────────────────────────────────
+        loadSchedules();
+    </script>
+</body>
+</html>
