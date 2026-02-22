@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch');
 const https = require('https');
@@ -7,11 +8,11 @@ const path = require('path');
 const app = express();
 
 // ============================================================================
-// CONFIG BLOCK — Update these values
+// CONFIG BLOCK — values loaded from .env
 // ============================================================================
 const CONFIG = {
-  PFSENSE_URL: 'https://10.40.0.1:5555',
-  API_KEY: '9af0148815969e75e4951d12646cf78e',
+  PFSENSE_URL: process.env.PFSENSE_URL || 'https://10.40.0.1:5555',
+  API_KEY: process.env.PFSENSE_API_KEY,
   // HOME (opt2) interface — these are BLOCK rules.
   // blockEnabled=true → kid is BLOCKED; blockEnabled=false → kid is ALLOWED outside schedule.
   HOME_RULES: [

@@ -76,12 +76,25 @@ To cut internet completely → disable their schedule rule.
 - **Toast notifications** — success/error on every action
 - **Auto-refresh** — polls `/api/home/rules` every 30 s
 
-## Configuration (`server.js` CONFIG block)
+## Configuration
+
+Sensitive values are stored in `.env` (never committed to git). `server.js` loads them via `dotenv`.
+
+### `.env` (local only, git-ignored)
+
+```
+PFSENSE_API_KEY=your_api_key_here
+PFSENSE_URL=https://10.40.0.1:5555
+```
+
+Copy `.env.example` to `.env` and fill in the real key.
+
+### `server.js` CONFIG block
 
 ```javascript
 const CONFIG = {
-  PFSENSE_URL: 'https://10.40.0.1:5555',
-  API_KEY: '9af0148815969e75e4951d12646cf78e',
+  PFSENSE_URL: process.env.PFSENSE_URL || 'https://10.40.0.1:5555',
+  API_KEY: process.env.PFSENSE_API_KEY,
   HOME_RULES: [
     { tracker: 1728781019, name: 'Tristan', scheduleTracker: 1728780997 },
     { tracker: 1730164046, name: 'Lydia',   scheduleTracker: 1730164014 },
@@ -91,7 +104,7 @@ const CONFIG = {
 };
 ```
 
-**API Key**: Hardcoded server-side, never exposed to the browser.
+**API Key**: Loaded from `.env`, never exposed to the browser or committed to git.
 
 ## Rule Trackers Reference
 
