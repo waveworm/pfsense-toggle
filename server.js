@@ -94,6 +94,59 @@ async function pfsenseApiCall(endpoint, method = 'GET', body = null) {
 }
 
 // ============================================================================
+// Schedule timing helpers
+// pfSense position days: 1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat 7=Sun
+// JS Date.getDay():      1=Mon 2=Tue 3=Wed 4=Thu 5=Fri 6=Sat 0=Sun
+// ============================================================================
+function pfDayToJsDay(pfDay) { return pfDay % 7; } // 7→0(Sun), 1-6 unchanged
+
+function timeToMinutes(t) {
+  const [h, m] = (t || '0:0').split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+// Returns { windowEnd: ms|null, nextStart: ms|null }
+// windowEnd  = when the currently-active schedule window ends
+// nextStart  = when the next schedule window begins (if not currently active)
+function getScheduleTimes(schedule) {
+  if (!schedule || !Array.isArray(schedule.timerange) || !schedule.timerange.length) {
+    return { windowEnd: null, nextStart: null };
+  }
+  const now      = new Date();
+  const todayJs  = now.getDay();
+  const nowMin   = now.getHours() * 60 + now.getMinutes();
+  let windowEnd  = null;
+  let nextStartMs = Infinity;
+
+  for (let offset = 0; offset < 7; offset++) {
+    const jsDay = (todayJs + offset) % 7;
+    for (const range of schedule.timerange) {
+      if (!range.hour || !range.position) continue;
+      if (!range.position.map(pfDayToJsDay).includes(jsDay)) continue;
+      const [startStr, endStr] = range.hour.split('-');
+      const startMin = timeToMinutes(startStr);
+      const endMin   = timeToMinutes(endStr);
+
+      if (offset === 0 && nowMin >= startMin && nowMin < endMin) {
+        // Currently inside this window
+        const d = new Date(now);
+        d.setHours(Math.floor(endMin / 60), endMin % 60, 0, 0);
+        windowEnd = d.getTime();
+      } else {
+        if (offset === 0 && startMin <= nowMin) continue; // window already passed today
+        const d = new Date(now);
+        d.setDate(d.getDate() + offset);
+        d.setHours(Math.floor(startMin / 60), startMin % 60, 0, 0);
+        const ms = d.getTime();
+        if (ms < nextStartMs) nextStartMs = ms;
+      }
+    }
+    if (windowEnd !== null || nextStartMs < Infinity) break;
+  }
+  return { windowEnd, nextStart: nextStartMs < Infinity ? nextStartMs : null };
+}
+
+// ============================================================================
 // Routes
 // ============================================================================
 
@@ -136,20 +189,29 @@ app.get('/api/home/rules', async (req, res) => {
 
       // scheduleActive: is the schedule currently in an allowed time window?
       let scheduleActive = null;
+      let scheduleWindowEnd = null;
+      let scheduleNextStart = null;
       if (scheduleRule && !scheduleRule.disabled && scheduleRule.sched) {
         const sched = scheduleMap[scheduleRule.sched];
-        if (sched) scheduleActive = sched.active === true;
+        if (sched) {
+          scheduleActive = sched.active === true;
+          const times = getScheduleTimes(sched);
+          scheduleWindowEnd = times.windowEnd;
+          scheduleNextStart = times.nextStart;
+        }
       }
 
       return {
-        tracker:         configRule.tracker,
-        scheduleTracker: configRule.scheduleTracker,
-        name:            configRule.name,
-        blockEnabled:    blockRule    ? !blockRule.disabled    : null,
-        scheduleEnabled: scheduleRule ? !scheduleRule.disabled : null,
+        tracker:            configRule.tracker,
+        scheduleTracker:    configRule.scheduleTracker,
+        name:               configRule.name,
+        blockEnabled:       blockRule    ? !blockRule.disabled    : null,
+        scheduleEnabled:    scheduleRule ? !scheduleRule.disabled : null,
         scheduleActive,
-        timerEndTime:    timer ? timer.endTime : null,
-        found:           !!blockRule
+        scheduleWindowEnd,
+        scheduleNextStart,
+        timerEndTime:       timer ? timer.endTime : null,
+        found:              !!blockRule
       };
     });
 

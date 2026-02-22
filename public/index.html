@@ -377,6 +377,17 @@
             color: #666;
         }
 
+        /* Schedule timing info row */
+        .sched-info {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            color: #555;
+            text-align: right;
+            padding-top: 2px;
+        }
+        .sched-info.active  { color: #3d9e5e; }
+        .sched-info.next    { color: #555; }
+
         /* Toast */
         .toast {
             position: fixed;
@@ -506,6 +517,16 @@
             return `${m}:${s.toString().padStart(2, '0')}`;
         }
 
+        function fmtTimeLabel(ts) {
+            const d   = new Date(ts);
+            const now = new Date();
+            const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            if (d.toDateString() === now.toDateString()) return time;
+            const tom = new Date(now); tom.setDate(tom.getDate() + 1);
+            if (d.toDateString() === tom.toDateString()) return `Tomorrow ${time}`;
+            return `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]} ${time}`;
+        }
+
         function renderKids() {
             const grid = document.getElementById('kidsGrid');
             grid.innerHTML = homeRules.map(kid => {
@@ -518,11 +539,15 @@
                 const cardState = allowed ? 'allowed'
                     : (schedOn && kid.scheduleActive) ? 'scheduled'
                     : 'blocked';
-                const timerRow  = hasTimer ? `
+                const timerRow = hasTimer ? `
                     <div class="kid-timer">
-                        <span>&#9201; <span id="cd-${kid.tracker}">${fmtCountdown(kid.timerEndTime)}</span> remaining</span>
+                        <span>&#9201; Until ${fmtTimeLabel(kid.timerEndTime)} &middot; <span id="cd-${kid.tracker}">${fmtCountdown(kid.timerEndTime)}</span> left</span>
                         <button class="kid-timer-cancel" onclick="cancelTimer(${kid.tracker})" title="Cancel timer">&#x2715;</button>
                     </div>` : '';
+                const schedInfoRow = kid.scheduleEnabled ? (
+                    kid.scheduleWindowEnd ? `<div class="sched-info active">Sched until ${fmtTimeLabel(kid.scheduleWindowEnd)}</div>` :
+                    kid.scheduleNextStart ? `<div class="sched-info next">Next: ${fmtTimeLabel(kid.scheduleNextStart)}</div>` : ''
+                ) : '';
                 return `
                 <div class="kid-card ${cardState}">
                     <div class="kid-name">${kid.name}</div>
@@ -567,6 +592,7 @@
                         </div>
                     </div>
 
+                    ${schedInfoRow}
                     ${timerRow}
                 </div>`;
             }).join('');
