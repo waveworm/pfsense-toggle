@@ -281,34 +281,52 @@
         /* Kid Cards */
         .kids-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 12px;
         }
 
         .kid-card {
             background: #16191f;
             border: 1px solid #1a1f28;
             border-radius: 6px;
-            padding: 20px;
+            padding: 14px;
             display: flex;
             flex-direction: column;
-            gap: 14px;
-            transition: border-color 300ms ease;
+            gap: 10px;
+            transition: border-color 300ms ease, background 300ms ease;
         }
 
+        /* Manually allowed / timer active — bright green */
         .kid-card.allowed {
-            border-color: rgba(34, 197, 94, 0.35);
+            border-color: rgba(34, 197, 94, 0.6);
+            background: rgba(34, 197, 94, 0.07);
         }
 
+        /* On schedule (may have internet during schedule hours) — muted green */
+        .kid-card.scheduled {
+            border-color: rgba(34, 197, 94, 0.25);
+            background: rgba(34, 197, 94, 0.03);
+        }
+
+        /* Fully blocked — red */
         .kid-card.blocked {
-            border-color: rgba(239, 68, 68, 0.25);
+            border-color: rgba(239, 68, 68, 0.45);
+            background: rgba(239, 68, 68, 0.05);
         }
 
         .kid-name {
-            font-size: 20px;
+            font-size: 16px;
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 1px;
+        }
+
+        @media (max-width: 480px) {
+            .kids-grid {
+                grid-template-columns: repeat(2, 1fr);
+                gap: 10px;
+            }
+            body { padding: 12px; }
         }
 
         .kid-row {
@@ -494,13 +512,17 @@
                 const allowed   = !kid.blockEnabled;
                 const schedOn   = kid.scheduleEnabled;
                 const hasTimer  = !!kid.timerEndTime;
+                // allowed = manually on or timer active (bright green)
+                // scheduled = block rule on but schedule enabled (light green — internet during sched hours)
+                // blocked = block rule on AND schedule off (red — no internet)
+                const cardState = allowed ? 'allowed' : (schedOn ? 'scheduled' : 'blocked');
                 const timerRow  = hasTimer ? `
                     <div class="kid-timer">
                         <span>&#9201; <span id="cd-${kid.tracker}">${fmtCountdown(kid.timerEndTime)}</span> remaining</span>
                         <button class="kid-timer-cancel" onclick="cancelTimer(${kid.tracker})" title="Cancel timer">&#x2715;</button>
                     </div>` : '';
                 return `
-                <div class="kid-card ${allowed ? 'allowed' : 'blocked'}">
+                <div class="kid-card ${cardState}">
                     <div class="kid-name">${kid.name}</div>
 
                     <div class="kid-divider"></div>
