@@ -512,10 +512,12 @@
                 const allowed   = !kid.blockEnabled;
                 const schedOn   = kid.scheduleEnabled;
                 const hasTimer  = !!kid.timerEndTime;
-                // allowed = manually on or timer active (bright green)
-                // scheduled = block rule on but schedule enabled (light green — internet during sched hours)
-                // blocked = block rule on AND schedule off (red — no internet)
-                const cardState = allowed ? 'allowed' : (schedOn ? 'scheduled' : 'blocked');
+                // allowed   = block rule off — manually/timer granted (bright green)
+                // scheduled = block rule on, schedule currently in active time window (light green)
+                // blocked   = no internet — block on, outside schedule hours or schedule off (red)
+                const cardState = allowed ? 'allowed'
+                    : (schedOn && kid.scheduleActive) ? 'scheduled'
+                    : 'blocked';
                 const timerRow  = hasTimer ? `
                     <div class="kid-timer">
                         <span>&#9201; <span id="cd-${kid.tracker}">${fmtCountdown(kid.timerEndTime)}</span> remaining</span>

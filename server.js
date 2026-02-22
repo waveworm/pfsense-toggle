@@ -111,9 +111,21 @@ app.get('/health', (req, res) => {
 // enabled=false → block rule is inactive → kid is ALLOWED
 app.get('/api/home/rules', async (req, res) => {
   try {
-    const rulesResponse = await pfsenseApiCall('/api/v2/firewall/rules');
+    // Fetch rules and schedules in parallel
+    const [rulesResponse, schedulesResponse] = await Promise.all([
+      pfsenseApiCall('/api/v2/firewall/rules'),
+      pfsenseApiCall('/api/v2/firewall/schedules')
+    ]);
     if (rulesResponse.error) {
       return res.status(500).json({ error: 'Failed to fetch rules from pfSense', details: rulesResponse.message });
+    }
+
+    // Build schedule lookup by name; pfSense returns active:true/false based on current time
+    const scheduleMap = {};
+    if (!schedulesResponse.error && Array.isArray(schedulesResponse.data)) {
+      for (const sched of schedulesResponse.data) {
+        scheduleMap[sched.name] = sched;
+      }
     }
 
     const allRules = rulesResponse.data || [];
@@ -121,12 +133,21 @@ app.get('/api/home/rules', async (req, res) => {
       const blockRule    = allRules.find(r => r.tracker === configRule.tracker);
       const scheduleRule = allRules.find(r => r.tracker === configRule.scheduleTracker);
       const timer = activeTimers.get(configRule.tracker);
+
+      // scheduleActive: is the schedule currently in an allowed time window?
+      let scheduleActive = null;
+      if (scheduleRule && !scheduleRule.disabled && scheduleRule.sched) {
+        const sched = scheduleMap[scheduleRule.sched];
+        if (sched) scheduleActive = sched.active === true;
+      }
+
       return {
         tracker:         configRule.tracker,
         scheduleTracker: configRule.scheduleTracker,
         name:            configRule.name,
         blockEnabled:    blockRule    ? !blockRule.disabled    : null,
         scheduleEnabled: scheduleRule ? !scheduleRule.disabled : null,
+        scheduleActive,
         timerEndTime:    timer ? timer.endTime : null,
         found:           !!blockRule
       };
