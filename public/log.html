@@ -129,10 +129,65 @@
             color: #333;
         }
 
+        /* Weekly table */
+        .weekly-section {
+            margin-bottom: 24px;
+        }
+
+        .weekly-label {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .weekly-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 11px;
+        }
+
+        .weekly-table th {
+            text-align: center;
+            padding: 6px 4px;
+            color: #444;
+            font-weight: 400;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #1a1f28;
+        }
+
+        .weekly-table th.col-name { text-align: left; padding-left: 12px; }
+
+        .weekly-table td {
+            text-align: center;
+            padding: 7px 4px;
+            border-bottom: 1px solid #1a1f28;
+            color: #555;
+        }
+
+        .weekly-table td.col-name {
+            text-align: left;
+            padding-left: 12px;
+            color: #e0e0e0;
+            font-weight: 700;
+        }
+
+        .weekly-table td.col-today { background: #1a1f28; }
+        .weekly-table th.col-today { background: #1a1f28; color: #888; }
+
+        .cell-mins { color: #f59e0b; }
+        .cell-zero { color: #2a3038; }
+
         @media (max-width: 540px) {
             .log-entry { grid-template-columns: 70px 70px 1fr; gap: 8px; }
             .log-details { display: none; }
             body { padding: 12px; }
+            .weekly-table th, .weekly-table td { padding: 6px 2px; font-size: 10px; }
         }
     </style>
 </head>
@@ -148,6 +203,12 @@
             <span class="refresh-info" id="refreshInfo">Auto-refresh 10s</span>
             <a class="nav-link" href="/schedule">Schedules</a>
         </div>
+    </div>
+
+    <!-- Weekly timed-access table -->
+    <div id="weeklySection" class="weekly-section" style="display:none;">
+        <div class="weekly-label">Timed Access — Last 7 Days</div>
+        <table class="weekly-table" id="weeklyTable"></table>
     </div>
 
     <!-- Today's totals by kid -->
@@ -236,12 +297,77 @@
                 </div>`).join('');
         }
 
+        function fmtMinsShort(m) {
+            if (!m) return '—';
+            return m >= 60
+                ? `${Math.floor(m/60)}h${m%60 ? (m%60)+'m' : ''}`
+                : `${m}m`;
+        }
+
+        function renderWeekly(entries, kids) {
+            if (!kids || !kids.length) return;
+
+            // Build day array: 6 days ago → today
+            const days = [];
+            for (let i = 6; i >= 0; i--) {
+                const d = new Date();
+                d.setHours(0, 0, 0, 0);
+                d.setDate(d.getDate() - i);
+                days.push(d);
+            }
+
+            // Accumulate timed-allow minutes per kid per day
+            const totals = {};
+            for (const kid of kids) totals[kid.name] = new Array(7).fill(0);
+
+            for (const e of entries) {
+                if (e.action !== 'timed-allow' || !e.kid) continue;
+                const mins = parseInt(e.details) || 0;
+                const entryDay = new Date(e.ts);
+                entryDay.setHours(0, 0, 0, 0);
+                const idx = days.findIndex(d => d.getTime() === entryDay.getTime());
+                if (idx === -1) continue;
+                if (totals[e.kid] !== undefined) totals[e.kid][idx] += mins;
+            }
+
+            const dayLabels = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+            const todayIdx = 6; // last column is always today
+
+            const table = document.getElementById('weeklyTable');
+            const headerCells = days.map((d, i) => {
+                const label = i === todayIdx ? 'Today' : dayLabels[d.getDay()];
+                const cls = i === todayIdx ? 'col-today' : '';
+                return `<th class="${cls}">${label}<br><span style="color:#2a3038;font-size:9px;">${d.getMonth()+1}/${d.getDate()}</span></th>`;
+            }).join('');
+
+            const rows = kids.map(kid => {
+                const cells = days.map((_, i) => {
+                    const m = totals[kid.name][i];
+                    const cls = i === todayIdx ? 'col-today' : '';
+                    const valCls = m ? 'cell-mins' : 'cell-zero';
+                    return `<td class="${cls}"><span class="${valCls}">${fmtMinsShort(m)}</span></td>`;
+                }).join('');
+                return `<tr><td class="col-name">${kid.name}</td>${cells}</tr>`;
+            }).join('');
+
+            table.innerHTML = `
+                <thead><tr><th class="col-name">Kid</th>${headerCells}</tr></thead>
+                <tbody>${rows}</tbody>`;
+
+            document.getElementById('weeklySection').style.display = 'block';
+        }
+
         async function fetchLog() {
             try {
-                const res = await fetch('/api/log');
-                if (!res.ok) throw new Error();
-                const data = await res.json();
+                const [logRes, schedRes] = await Promise.all([
+                    fetch('/api/log'),
+                    fetch('/api/schedules')
+                ]);
+                if (!logRes.ok) throw new Error();
+                const data = await logRes.json();
                 const entries = data.log || [];
+                const kids = schedRes.ok ? (await schedRes.json()).kids || [] : [];
+                renderWeekly(entries, kids);
                 renderSummary(entries);
                 renderLog(entries);
                 document.getElementById('refreshInfo').textContent =

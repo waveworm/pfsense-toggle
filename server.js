@@ -137,13 +137,33 @@ const activeTimers = new Map();
 const activeSkips = new Map();
 
 // ============================================================================
-// Audit Log — in-memory, newest first, capped at 200 entries
+// Audit Log — persisted to action-log.json, newest first, capped at 1000 entries
 // ============================================================================
-const actionLog = [];
+const ACTION_LOG_FILE = path.join(__dirname, 'action-log.json');
+
+function loadActionLog() {
+  try {
+    if (fs.existsSync(ACTION_LOG_FILE)) return JSON.parse(fs.readFileSync(ACTION_LOG_FILE, 'utf8'));
+  } catch (e) {
+    console.error('Failed to load action-log.json:', e.message);
+  }
+  return [];
+}
+
+function saveActionLog() {
+  try {
+    fs.writeFileSync(ACTION_LOG_FILE, JSON.stringify(actionLog));
+  } catch (e) {
+    console.error('Failed to save action-log.json:', e.message);
+  }
+}
+
+const actionLog = loadActionLog();
 
 function logAction(action, kid, details) {
   actionLog.unshift({ ts: Date.now(), action, kid: kid || null, details: details || null });
-  if (actionLog.length > 200) actionLog.length = 200;
+  if (actionLog.length > 1000) actionLog.length = 1000;
+  saveActionLog();
 }
 
 // ============================================================================
