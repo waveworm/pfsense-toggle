@@ -7,3 +7,5 @@ npm-debug.log*
 schedules.json
 action-log.json
 settings.json
+blocked-macs.json
+known-macs.json

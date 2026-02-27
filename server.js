@@ -33,6 +33,9 @@ const CONFIG = {
 // ============================================================================
 const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 
+// MACs that should never be blocked/unblocked via UniFi (pfSense rule still applies).
+const unifiExcludedMacs = new Set();
+
 function loadSettings() {
   try {
     if (!fs.existsSync(SETTINGS_FILE)) return;
@@ -42,6 +45,10 @@ function loadSettings() {
     if (s.unifiUrl !== undefined) CONFIG.UNIFI_URL  = s.unifiUrl;
     if (s.unifiSite)             CONFIG.UNIFI_SITE  = s.unifiSite;
     if (s.ntfyUrl !== undefined)  process.env.NTFY_URL = s.ntfyUrl;
+    if (Array.isArray(s.unifiExcludedMacs)) {
+      unifiExcludedMacs.clear();
+      s.unifiExcludedMacs.forEach(m => unifiExcludedMacs.add(m.toLowerCase()));
+    }
   } catch (e) {
     console.error('Failed to load settings.json:', e.message);
   }
@@ -229,6 +236,7 @@ function pfctlKill(ip) {
   return new Promise((resolve) => {
     execFile('ssh', [
       '-i', '/root/.ssh/id_ed25519',
+      '-o', 'IdentitiesOnly=yes',
       '-o', 'StrictHostKeyChecking=no',
       '-o', 'ConnectTimeout=5',
       '-o', 'BatchMode=yes',
@@ -294,10 +302,64 @@ async function killStatesForSource(sourceAddr, kidName) {
 // ============================================================================
 // UniFi WiFi Client Blocking — disconnects kid's devices when blocked.
 // Requires unifi-maintenance-dashboard running at UNIFI_DASHBOARD_URL.
-// kidBlockedMacs caches MAC addresses per tracker so we can unblock later,
-// even if the device is offline and no longer in the client list.
+//
+// Two persistent stores (both survive pm2 restarts):
+//   known-macs.json  — tracker → [mac, ...] of every device ever seen per kid.
+//                      Grows over time; used to block offline devices too.
+//   blocked-macs.json — tracker → [mac, ...] currently blocked, for unblock.
 // ============================================================================
-const kidBlockedMacs = new Map(); // tracker (number) → [mac, ...]
+const KNOWN_MACS_FILE   = path.join(__dirname, 'known-macs.json');
+const BLOCKED_MACS_FILE = path.join(__dirname, 'blocked-macs.json');
+const kidKnownMacs   = new Map(); // tracker → Set of known MACs
+const kidBlockedMacs = new Map(); // tracker → [mac, ...] currently blocked
+
+function loadMacFiles() {
+  for (const [file, map, asSet] of [
+    [KNOWN_MACS_FILE,   kidKnownMacs,   true],
+    [BLOCKED_MACS_FILE, kidBlockedMacs, false],
+  ]) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      for (const [tracker, macs] of Object.entries(data)) {
+        if (Array.isArray(macs) && macs.length)
+          map.set(Number(tracker), asSet ? new Set(macs) : macs);
+      }
+    } catch (e) { console.error(`Failed to load ${path.basename(file)}:`, e.message); }
+  }
+  if (kidKnownMacs.size) console.log(`Loaded known MACs for ${kidKnownMacs.size} kid(s)`);
+  if (kidBlockedMacs.size) console.log(`Loaded blocked MACs for ${kidBlockedMacs.size} kid(s)`);
+}
+
+function saveKnownMacs() {
+  try {
+    const data = {};
+    for (const [tracker, set] of kidKnownMacs) data[tracker] = [...set];
+    fs.writeFileSync(KNOWN_MACS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) { console.error('Failed to save known-macs.json:', e.message); }
+}
+
+function saveBlockedMacs() {
+  try {
+    const data = {};
+    for (const [tracker, macs] of kidBlockedMacs) data[tracker] = macs;
+    fs.writeFileSync(BLOCKED_MACS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) { console.error('Failed to save blocked-macs.json:', e.message); }
+}
+
+// Record any newly seen MACs for a kid (called whenever we query clients).
+// Excluded MACs (e.g. wired machines that should only be pfSense-blocked) are skipped.
+function learnMacs(tracker, macs) {
+  const filtered = macs.filter(m => !unifiExcludedMacs.has(m.toLowerCase()));
+  if (!filtered.length) return;
+  let set = kidKnownMacs.get(tracker);
+  const before = set ? set.size : 0;
+  if (!set) { set = new Set(); kidKnownMacs.set(tracker, set); }
+  filtered.forEach(m => set.add(m));
+  if (set.size > before) saveKnownMacs();
+}
+
+loadMacFiles();
 
 async function unifiApiCall(method, endpoint, body = null) {
   if (!CONFIG.UNIFI_URL) return { error: true, message: 'UNIFI_DASHBOARD_URL not configured' };
@@ -313,48 +375,62 @@ async function unifiApiCall(method, endpoint, body = null) {
   }
 }
 
-// Block a kid's devices on UniFi WiFi by resolving their IPs → MACs → block each.
+// Block a kid's devices on UniFi.
+// Queries the client list to find online devices → learns their MACs → blocks
+// all known MACs for this kid (catches offline devices seen in past sessions).
 async function unifiBlockKid(tracker, sourceAddr, kidName) {
   if (!CONFIG.UNIFI_URL) return;
   const ips = await resolveSourceIPs(sourceAddr);
   if (!ips.length) return;
+
+  // Learn any currently-online MACs for this kid
   const clientsRes = await unifiApiCall('GET', `/api/clients?site=${CONFIG.UNIFI_SITE}`);
-  if (clientsRes.error || !Array.isArray(clientsRes)) {
-    console.error(`unifiBlock: failed to fetch clients for ${kidName}:`, clientsRes.message || clientsRes.raw);
-    return;
+  if (!clientsRes.error && Array.isArray(clientsRes)) {
+    const onlineMacs = ips.map(ip => clientsRes.find(c => c.ip === ip)?.mac).filter(Boolean);
+    learnMacs(tracker, onlineMacs);
   }
-  const macs = [];
-  for (const ip of ips) {
-    const client = clientsRes.find(c => c.ip === ip);
-    if (client && client.mac) {
-      macs.push(client.mac);
-      const r = await unifiApiCall('POST', '/api/clients/block', { mac: client.mac, site: CONFIG.UNIFI_SITE });
-      if (!r.error) {
-        console.log(`unifiBlock: ${kidName} mac=${client.mac} ip=${ip} — blocked`);
-      } else {
-        console.error(`unifiBlock: failed for ${kidName} mac=${client.mac} ip=${ip} — ${r.message || r.detail}`);
-      }
+
+  // Block all known MACs (online now + seen in past), skipping excluded ones
+  const allMacs = [...(kidKnownMacs.get(tracker) || [])].filter(m => !unifiExcludedMacs.has(m.toLowerCase()));
+  if (!allMacs.length) return;
+  const blocked = [];
+  for (const mac of allMacs) {
+    const r = await unifiApiCall('POST', '/api/clients/block', { mac, site: CONFIG.UNIFI_SITE });
+    if (!r.error) {
+      blocked.push(mac);
+      console.log(`unifiBlock: ${kidName} mac=${mac} — blocked`);
+    } else {
+      console.error(`unifiBlock: failed for ${kidName} mac=${mac} — ${r.message || r.detail}`);
     }
   }
-  if (macs.length) kidBlockedMacs.set(tracker, macs);
+  if (blocked.length) { kidBlockedMacs.set(tracker, blocked); saveBlockedMacs(); }
 }
 
-// Unblock a kid's devices on UniFi WiFi.
-// Uses cached MACs; falls back to IP lookup if cache is empty (e.g. after restart).
+// Unblock a kid's devices on UniFi.
+// Uses the blocked-MACs cache; also unblocks any other known MACs as a safety net.
 async function unifiUnblockKid(tracker, kidName, sourceAddr = null) {
   if (!CONFIG.UNIFI_URL) return;
-  let macs = kidBlockedMacs.get(tracker);
-  if ((!macs || !macs.length) && sourceAddr) {
+
+  // Union of cached blocked MACs + all known MACs, skipping excluded ones
+  const toUnblock = new Set([
+    ...(kidBlockedMacs.get(tracker) || []),
+    ...(kidKnownMacs.get(tracker) || []),
+  ].filter(m => !unifiExcludedMacs.has(m.toLowerCase())));
+
+  // If we still have nothing, try IP lookup as last resort
+  if (!toUnblock.size && sourceAddr) {
     const ips = await resolveSourceIPs(sourceAddr);
     if (ips.length) {
       const clientsRes = await unifiApiCall('GET', `/api/clients?site=${CONFIG.UNIFI_SITE}`);
       if (!clientsRes.error && Array.isArray(clientsRes)) {
-        macs = ips.map(ip => clientsRes.find(c => c.ip === ip)?.mac).filter(Boolean);
+        ips.map(ip => clientsRes.find(c => c.ip === ip)?.mac).filter(Boolean)
+           .forEach(m => toUnblock.add(m));
       }
     }
   }
-  if (!macs || !macs.length) return;
-  for (const mac of macs) {
+
+  if (!toUnblock.size) return;
+  for (const mac of toUnblock) {
     const r = await unifiApiCall('POST', '/api/clients/unblock', { mac, site: CONFIG.UNIFI_SITE });
     if (!r.error) {
       console.log(`unifiUnblock: ${kidName} mac=${mac} — unblocked`);
@@ -363,6 +439,7 @@ async function unifiUnblockKid(tracker, kidName, sourceAddr = null) {
     }
   }
   kidBlockedMacs.delete(tracker);
+  saveBlockedMacs();
 }
 
 // Extract the source value from a pfSense rule object.
@@ -445,7 +522,7 @@ async function pfsenseApiCall(endpoint, method = 'GET', body = null) {
 }
 
 // ============================================================================
-// Schedule Enforcement — runs every 60 seconds
+// Schedule Enforcement — runs every 15 seconds
 // Compares desired state (from scheduleConfig) vs actual pfSense rule state
 // and applies corrections. Skips kids with active timed-access timers.
 // ============================================================================
@@ -1116,7 +1193,7 @@ app.listen(PORT, async () => {
   console.log(`\n✓ pfSense Kids Access running at http://localhost:${PORT}`);
   console.log(`✓ Configured ${CONFIG.HOME_RULES.length} kids for control`);
   console.log(`✓ Connected to pfSense: ${CONFIG.PFSENSE_URL}`);
-  console.log(`✓ Schedule enforcement active (every 60s)`);
+  console.log(`✓ Schedule enforcement active (every 15s)`);
   console.log(`✓ Schedule page: http://localhost:${PORT}/schedule\n`);
 
   // Run initial schedule enforcement

@@ -18,6 +18,8 @@ A Node.js/Express web app that controls kids' internet access by toggling pfSens
 - `schedules.json` persists schedule config locally (git-ignored); never committed.
 - `settings.json` persists runtime-editable settings (pfSense URL/key, UniFi URL/site, ntfy URL) — overlays `.env` on startup; git-ignored.
 - `action-log.json` persists the audit log (1000 entries, newest first); git-ignored.
+- `known-macs.json` persists every MAC address ever seen per kid (grows over time); used to block offline devices reliably; git-ignored.
+- `blocked-macs.json` persists which MACs are currently blocked per kid; survives restarts so unblock works even when devices are offline; git-ignored.
 - Schedule enforcement runs every 15 seconds server-side.
 - When a kid is blocked, three things happen: pfSense rule enabled → `pfctl -k` kills existing connections → UniFi blocks each device MAC.
 - When a kid is allowed, pfSense rule disabled → UniFi unblocks cached MACs (falls back to IP lookup if cache empty).
