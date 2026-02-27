@@ -8,6 +8,7 @@ const https = require('https');
 const bodyParser = require('body-parser');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
 
 const app = express();
 
@@ -20,8 +21,41 @@ const CONFIG = {
   // HOME (opt2) interface — these are BLOCK rules.
   // blockEnabled=true → kid is BLOCKED; blockEnabled=false → kid is ALLOWED outside schedule.
   // Loaded from HOME_RULES env var as JSON array: [{ tracker, name, scheduleTracker }, ...]
-  HOME_RULES: JSON.parse(process.env.HOME_RULES || '[]')
+  HOME_RULES: JSON.parse(process.env.HOME_RULES || '[]'),
+  // UniFi dashboard integration — set UNIFI_DASHBOARD_URL to enable WiFi client blocking
+  UNIFI_URL: process.env.UNIFI_DASHBOARD_URL || '',
+  UNIFI_SITE: process.env.UNIFI_SITE || 'default'
 };
+
+// ============================================================================
+// Settings — persisted to settings.json, overlays .env values at startup.
+// Allows runtime editing of connection config without restarting the server.
+// ============================================================================
+const SETTINGS_FILE = path.join(__dirname, 'settings.json');
+
+function loadSettings() {
+  try {
+    if (!fs.existsSync(SETTINGS_FILE)) return;
+    const s = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    if (s.pfsenseUrl)            CONFIG.PFSENSE_URL = s.pfsenseUrl;
+    if (s.pfsenseApiKey)         CONFIG.API_KEY     = s.pfsenseApiKey;
+    if (s.unifiUrl !== undefined) CONFIG.UNIFI_URL  = s.unifiUrl;
+    if (s.unifiSite)             CONFIG.UNIFI_SITE  = s.unifiSite;
+    if (s.ntfyUrl !== undefined)  process.env.NTFY_URL = s.ntfyUrl;
+  } catch (e) {
+    console.error('Failed to load settings.json:', e.message);
+  }
+}
+
+function saveSettings(data) {
+  try {
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error('Failed to save settings.json:', e.message);
+  }
+}
+
+loadSettings();
 
 // ============================================================================
 // Schedule config — persisted to schedules.json
@@ -184,6 +218,163 @@ async function sendNotif(title, body) {
   }
 }
 
+// ============================================================================
+// Kill pfSense state table entries when a block rule is enabled.
+// Uses SSH + pfctl -k <ip> -- the pfSense REST API v2 DELETE /firewall/states
+// endpoint does not support filtering by IP (tested and confirmed).
+// Key: /root/.ssh/id_ed25519 -- pre-authorized on pfSense at port 2222.
+// ============================================================================
+
+function pfctlKill(ip) {
+  return new Promise((resolve) => {
+    execFile('ssh', [
+      '-i', '/root/.ssh/id_ed25519',
+      '-o', 'StrictHostKeyChecking=no',
+      '-o', 'ConnectTimeout=5',
+      '-o', 'BatchMode=yes',
+      '-p', '2222',
+      'root@10.40.0.1',
+      'pfctl -k ' + ip
+    ], (err, stdout, stderr) => {
+      resolve({ ok: !err, out: (stdout + stderr).trim() });
+    });
+  });
+}
+
+// Returns true if the string looks like a plain IP or CIDR (not an alias name).
+function isIpOrCidr(s) {
+  return /^[\d.:\/]+$/.test(s);
+}
+
+// Resolve a source value to a list of IP strings.
+// If it's already an IP/CIDR, returns it directly.
+// If it looks like an alias name, fetches the alias from pfSense and returns
+// its member addresses.
+async function resolveSourceIPs(source) {
+  if (!source) return [];
+  if (isIpOrCidr(source)) return [source];
+
+  const res = await pfsenseApiCall('/api/v2/firewall/aliases');
+  if (res.error || !res.data) {
+    console.error(`resolveSourceIPs: could not fetch aliases:`, res.message || 'no data');
+    return [];
+  }
+
+  const aliases = Array.isArray(res.data) ? res.data : [res.data];
+  const match = aliases.find(a => a.name === source);
+  if (!match) {
+    console.error(`resolveSourceIPs: alias "${source}" not found in response`);
+    return [];
+  }
+
+  const raw = match.address ?? match.entries ?? match.content ?? '';
+  if (Array.isArray(raw)) {
+    return raw.map(e => (typeof e === 'string' ? e : e.address)).filter(Boolean);
+  }
+  return String(raw).split(/\s+/).filter(Boolean);
+}
+
+async function killStatesForSource(sourceAddr, kidName) {
+  if (!sourceAddr) return;
+  const ips = await resolveSourceIPs(sourceAddr);
+  if (!ips.length) {
+    console.error(`killStates: no IPs resolved for ${kidName} (source="${sourceAddr}")`);
+    return;
+  }
+  for (const ip of ips) {
+    const { ok, out } = await pfctlKill(ip);
+    if (ok) {
+      console.log(`killStates: ${kidName} ip=${ip} — ${out}`);
+    } else {
+      console.error(`killStates: failed for ${kidName} ip=${ip} — ${out}`);
+    }
+  }
+}
+
+// ============================================================================
+// UniFi WiFi Client Blocking — disconnects kid's devices when blocked.
+// Requires unifi-maintenance-dashboard running at UNIFI_DASHBOARD_URL.
+// kidBlockedMacs caches MAC addresses per tracker so we can unblock later,
+// even if the device is offline and no longer in the client list.
+// ============================================================================
+const kidBlockedMacs = new Map(); // tracker (number) → [mac, ...]
+
+async function unifiApiCall(method, endpoint, body = null) {
+  if (!CONFIG.UNIFI_URL) return { error: true, message: 'UNIFI_DASHBOARD_URL not configured' };
+  try {
+    const options = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) options.body = JSON.stringify(body);
+    const res = await fetch(`${CONFIG.UNIFI_URL}${endpoint}`, options);
+    const text = await res.text();
+    try { return JSON.parse(text); } catch (e) { return { raw: text }; }
+  } catch (err) {
+    console.error(`UniFi API call failed [${endpoint}]:`, err.message);
+    return { error: true, message: err.message };
+  }
+}
+
+// Block a kid's devices on UniFi WiFi by resolving their IPs → MACs → block each.
+async function unifiBlockKid(tracker, sourceAddr, kidName) {
+  if (!CONFIG.UNIFI_URL) return;
+  const ips = await resolveSourceIPs(sourceAddr);
+  if (!ips.length) return;
+  const clientsRes = await unifiApiCall('GET', `/api/clients?site=${CONFIG.UNIFI_SITE}`);
+  if (clientsRes.error || !Array.isArray(clientsRes)) {
+    console.error(`unifiBlock: failed to fetch clients for ${kidName}:`, clientsRes.message || clientsRes.raw);
+    return;
+  }
+  const macs = [];
+  for (const ip of ips) {
+    const client = clientsRes.find(c => c.ip === ip);
+    if (client && client.mac) {
+      macs.push(client.mac);
+      const r = await unifiApiCall('POST', '/api/clients/block', { mac: client.mac, site: CONFIG.UNIFI_SITE });
+      if (!r.error) {
+        console.log(`unifiBlock: ${kidName} mac=${client.mac} ip=${ip} — blocked`);
+      } else {
+        console.error(`unifiBlock: failed for ${kidName} mac=${client.mac} ip=${ip} — ${r.message || r.detail}`);
+      }
+    }
+  }
+  if (macs.length) kidBlockedMacs.set(tracker, macs);
+}
+
+// Unblock a kid's devices on UniFi WiFi.
+// Uses cached MACs; falls back to IP lookup if cache is empty (e.g. after restart).
+async function unifiUnblockKid(tracker, kidName, sourceAddr = null) {
+  if (!CONFIG.UNIFI_URL) return;
+  let macs = kidBlockedMacs.get(tracker);
+  if ((!macs || !macs.length) && sourceAddr) {
+    const ips = await resolveSourceIPs(sourceAddr);
+    if (ips.length) {
+      const clientsRes = await unifiApiCall('GET', `/api/clients?site=${CONFIG.UNIFI_SITE}`);
+      if (!clientsRes.error && Array.isArray(clientsRes)) {
+        macs = ips.map(ip => clientsRes.find(c => c.ip === ip)?.mac).filter(Boolean);
+      }
+    }
+  }
+  if (!macs || !macs.length) return;
+  for (const mac of macs) {
+    const r = await unifiApiCall('POST', '/api/clients/unblock', { mac, site: CONFIG.UNIFI_SITE });
+    if (!r.error) {
+      console.log(`unifiUnblock: ${kidName} mac=${mac} — unblocked`);
+    } else {
+      console.error(`unifiUnblock: failed for ${kidName} mac=${mac} — ${r.message || r.detail}`);
+    }
+  }
+  kidBlockedMacs.delete(tracker);
+}
+
+// Extract the source value from a pfSense rule object.
+// The API returns source as either a plain string or an object like
+// { address: "x.x.x.x" }, { network: "x.x.x.x/24" }, or { any: true }.
+function ruleSourceAddr(rule) {
+  const src = rule?.source;
+  if (!src) return null;
+  if (typeof src === 'string') return src;
+  return src.address || src.network || null;
+}
+
 async function blockKidNow(tracker) {
   const timerData = activeTimers.get(tracker);
   activeTimers.delete(tracker);
@@ -203,6 +394,8 @@ async function blockKidNow(tracker) {
     if (rule && rule.disabled) {
       await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: rule.id, disabled: false });
       await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+      await killStatesForSource(ruleSourceAddr(rule), kidName);
+      await unifiBlockKid(tracker, ruleSourceAddr(rule), kidName);
       logAction('timer-expired', kidName, 'Timer ended — blocked');
       sendNotif('Timer Expired', `${kidName}'s internet timer ended — now blocked`);
     }
@@ -236,6 +429,7 @@ async function pfsenseApiCall(endpoint, method = 'GET', body = null) {
     };
     if (body) options.body = JSON.stringify(body);
 
+    console.log(`API ${method} ${url}`);
     const response = await fetch(url, options);
     const text = await response.text();
 
@@ -269,6 +463,7 @@ async function enforceSchedules() {
     }
     const allRules = rulesRes.data || [];
     let needsApply = false;
+    const toKillStates = [];
 
     for (const kid of CONFIG.HOME_RULES) {
       // Skip if a manual timer is active for this kid
@@ -296,6 +491,7 @@ async function enforceSchedules() {
         console.log(`Schedule: allowing ${kid.name}`);
         logAction('schedule-allow', kid.name, 'Schedule window opened');
         sendNotif('Schedule', `${kid.name} — internet allowed (schedule window opened)`);
+        await unifiUnblockKid(kid.tracker, kid.name, ruleSourceAddr(blockRule));
       } else if (!shouldBeAllowed && kidIsAllowed) {
         // Should be blocked but is allowed — enable block rule
         await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: blockRule.id, disabled: false });
@@ -308,10 +504,17 @@ async function enforceSchedules() {
           logAction('schedule-block', kid.name, 'Schedule window closed');
         }
         sendNotif('Schedule', `${kid.name} — internet blocked`);
+        toKillStates.push({ rule: blockRule, name: kid.name, tracker: kid.tracker });
       }
     }
 
-    if (needsApply) await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+    if (needsApply) {
+      await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+      for (const { rule, name, tracker } of toKillStates) {
+        await killStatesForSource(ruleSourceAddr(rule), name);
+        await unifiBlockKid(tracker, ruleSourceAddr(rule), name);
+      }
+    }
   } catch (err) {
     console.error('Schedule enforcement error:', err.message);
   }
@@ -336,9 +539,161 @@ app.get('/log', (_req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'log.html'));
 });
 
+// Settings page
+app.get('/settings', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'settings.html'));
+});
+
 // GET /api/log — return audit log
 app.get('/api/log', (_req, res) => {
   res.json({ success: true, log: actionLog });
+});
+
+// ============================================================================
+// Settings API
+// ============================================================================
+
+// GET /api/settings — return current settings (API key masked)
+app.get('/api/settings', (_req, res) => {
+  res.json({
+    success: true,
+    pfsenseUrl:    CONFIG.PFSENSE_URL,
+    hasApiKey:     !!CONFIG.API_KEY,
+    unifiUrl:      CONFIG.UNIFI_URL,
+    unifiSite:     CONFIG.UNIFI_SITE,
+    ntfyUrl:       process.env.NTFY_URL || ''
+  });
+});
+
+// PUT /api/settings — save settings to settings.json and hot-reload CONFIG
+app.put('/api/settings', (req, res) => {
+  try {
+    const { pfsenseUrl, pfsenseApiKey, unifiUrl, unifiSite, ntfyUrl } = req.body;
+    const SENTINEL = '••••••••';
+
+    // Load existing saved settings to merge (don't wipe unsent fields)
+    let saved = {};
+    try {
+      if (fs.existsSync(SETTINGS_FILE)) saved = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    } catch (_) {}
+
+    if (pfsenseUrl !== undefined) {
+      saved.pfsenseUrl = pfsenseUrl;
+      CONFIG.PFSENSE_URL = pfsenseUrl;
+    }
+    // Only update API key if a real value was sent (not the sentinel placeholder)
+    if (pfsenseApiKey !== undefined && pfsenseApiKey !== SENTINEL && pfsenseApiKey !== '') {
+      saved.pfsenseApiKey = pfsenseApiKey;
+      CONFIG.API_KEY = pfsenseApiKey;
+    }
+    if (unifiUrl !== undefined) {
+      saved.unifiUrl = unifiUrl;
+      CONFIG.UNIFI_URL = unifiUrl;
+    }
+    if (unifiSite !== undefined) {
+      saved.unifiSite = unifiSite;
+      CONFIG.UNIFI_SITE = unifiSite;
+    }
+    if (ntfyUrl !== undefined) {
+      saved.ntfyUrl = ntfyUrl;
+      process.env.NTFY_URL = ntfyUrl;
+    }
+
+    saveSettings(saved);
+    logAction('settings-saved', null, 'Settings updated');
+    res.json({ success: true, message: 'Settings saved' });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
+// ============================================================================
+// Device management API — manage IPs in a kid's pfSense alias
+// ============================================================================
+
+// Helper: fetch alias for a kid's rule. Returns { aliasName, aliasId, address, ips }
+async function getKidAlias(tracker) {
+  const rulesRes = await pfsenseApiCall('/api/v2/firewall/rules');
+  if (rulesRes.error) throw new Error('Failed to fetch pfSense rules');
+  const rule = (rulesRes.data || []).find(r => r.tracker === tracker);
+  if (!rule) throw new Error(`Rule not found for tracker ${tracker}`);
+  const aliasName = ruleSourceAddr(rule);
+  if (!aliasName || isIpOrCidr(aliasName)) throw new Error('Rule source is not an alias name');
+
+  const aliasesRes = await pfsenseApiCall('/api/v2/firewall/aliases');
+  if (aliasesRes.error) throw new Error('Failed to fetch pfSense aliases');
+  const aliases = Array.isArray(aliasesRes.data) ? aliasesRes.data : [aliasesRes.data];
+  const alias = aliases.find(a => a.name === aliasName);
+  if (!alias) throw new Error(`Alias "${aliasName}" not found`);
+
+  // address may be strings or {address: "ip"} objects
+  const raw = alias.address ?? alias.entries ?? alias.content ?? [];
+  const entries = Array.isArray(raw) ? raw : String(raw).split(/\s+/).filter(Boolean);
+  const ips = entries.map(e => (typeof e === 'string' ? e : e.address)).filter(Boolean);
+  return { aliasName, aliasId: alias.id, address: entries, ips };
+}
+
+// GET /api/kids/:tracker/devices — list IPs in kid's pfSense alias
+app.get('/api/kids/:tracker/devices', async (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    const configRule = CONFIG.HOME_RULES.find(r => r.tracker === tracker);
+    if (!configRule) return res.status(404).json({ error: 'Kid not found' });
+    const { aliasName, ips } = await getKidAlias(tracker);
+    res.json({ success: true, name: configRule.name, aliasName, ips });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/kids/:tracker/devices — add an IP to kid's pfSense alias
+app.post('/api/kids/:tracker/devices', async (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    const configRule = CONFIG.HOME_RULES.find(r => r.tracker === tracker);
+    if (!configRule) return res.status(404).json({ error: 'Kid not found' });
+    const ip = (req.body.ip || '').trim();
+    if (!ip || !/^[\d.:\/]+$/.test(ip)) return res.status(400).json({ error: 'Invalid IP address' });
+
+    const { aliasName, aliasId, address, ips } = await getKidAlias(tracker);
+    if (ips.includes(ip)) return res.status(409).json({ error: 'IP already in alias' });
+
+    // Append new entry preserving original format
+    const newAddress = typeof address[0] === 'string' || !address.length
+      ? [...address, ip]
+      : [...address, { address: ip }];
+
+    const updateRes = await pfsenseApiCall('/api/v2/firewall/alias', 'PATCH', { id: aliasId, address: newAddress });
+    if (updateRes.error) return res.status(500).json({ error: 'Failed to update alias', details: updateRes.message });
+    await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+    logAction('device-add', configRule.name, `Added ${ip} to ${aliasName}`);
+    res.json({ success: true, aliasName, ips: [...ips, ip] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/kids/:tracker/devices/:ip — remove an IP from kid's pfSense alias
+app.delete('/api/kids/:tracker/devices/:ip', async (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    const configRule = CONFIG.HOME_RULES.find(r => r.tracker === tracker);
+    if (!configRule) return res.status(404).json({ error: 'Kid not found' });
+    const ip = req.params.ip;
+
+    const { aliasName, aliasId, address, ips } = await getKidAlias(tracker);
+    if (!ips.includes(ip)) return res.status(404).json({ error: 'IP not found in alias' });
+    if (ips.length <= 1) return res.status(400).json({ error: 'Cannot remove last IP from alias' });
+
+    const newAddress = address.filter(e => (typeof e === 'string' ? e : e.address) !== ip);
+    const updateRes = await pfsenseApiCall('/api/v2/firewall/alias', 'PATCH', { id: aliasId, address: newAddress });
+    if (updateRes.error) return res.status(500).json({ error: 'Failed to update alias', details: updateRes.message });
+    await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+    logAction('device-remove', configRule.name, `Removed ${ip} from ${aliasName}`);
+    res.json({ success: true, aliasName, ips: ips.filter(i => i !== ip) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============================================================================
@@ -405,6 +760,13 @@ app.post('/api/home/rules/:tracker/toggle', async (req, res) => {
     await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
 
     const blockEnabled = !newDisabledState;
+    // Kill existing states so blocking takes effect immediately (e.g. iMessage)
+    if (blockEnabled) {
+      await killStatesForSource(ruleSourceAddr(currentRule), configRule.name);
+      await unifiBlockKid(tracker, ruleSourceAddr(currentRule), configRule.name);
+    } else {
+      await unifiUnblockKid(tracker, configRule.name, ruleSourceAddr(currentRule));
+    }
     logAction(blockEnabled ? 'toggle-block' : 'toggle-allow', configRule.name,
       blockEnabled ? 'Manually blocked' : 'Manually allowed');
     res.json({
@@ -462,6 +824,7 @@ app.post('/api/home/allow-all', async (req, res) => {
       if (currentRule && !currentRule.disabled) {
         await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: currentRule.id, disabled: true });
         changed++;
+        await unifiUnblockKid(homeRule.tracker, homeRule.name, ruleSourceAddr(currentRule));
       }
     }
 
@@ -482,15 +845,23 @@ app.post('/api/home/block-all', async (req, res) => {
     const allRules = rulesResponse.data || [];
     let changed = 0;
 
+    const toKillStates = [];
     for (const homeRule of CONFIG.HOME_RULES) {
       const currentRule = allRules.find(r => r.tracker === homeRule.tracker);
       if (currentRule && currentRule.disabled) {
         await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: currentRule.id, disabled: false });
+        toKillStates.push({ rule: currentRule, name: homeRule.name, tracker: homeRule.tracker });
         changed++;
       }
     }
 
-    if (changed > 0) await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+    if (changed > 0) {
+      await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+      for (const { rule, name, tracker } of toKillStates) {
+        await killStatesForSource(ruleSourceAddr(rule), name);
+        await unifiBlockKid(tracker, ruleSourceAddr(rule), name);
+      }
+    }
     logAction('block-all', null, `${changed} kids blocked`);
     res.json({ success: true, changed, message: 'All kids are now BLOCKED' });
   } catch (err) {
@@ -585,6 +956,7 @@ app.post('/api/home/rules/:tracker/timed-allow', async (req, res) => {
     if (blockRule && !blockRule.disabled) {
       await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: blockRule.id, disabled: true });
       await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+      await unifiUnblockKid(tracker, configRule.name, ruleSourceAddr(blockRule));
     }
 
     const endTime = Date.now() + minutes * 60 * 1000;
@@ -622,6 +994,7 @@ app.post('/api/home/allow-all-timed', async (req, res) => {
       const blockRule = allRules.find(r => r.tracker === configRule.tracker);
       if (blockRule && !blockRule.disabled) {
         await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: blockRule.id, disabled: true });
+        await unifiUnblockKid(configRule.tracker, configRule.name, ruleSourceAddr(blockRule));
       }
 
       const timeoutId = setTimeout(() => blockKidNow(configRule.tracker), minutes * 60 * 1000);
@@ -707,6 +1080,28 @@ app.post('/api/home/rules/:tracker/cancel-skip', async (req, res) => {
     logAction('skip-cancel', skipRule?.name || String(tracker), 'Skip cancelled');
     enforceSchedules().catch(err => console.error('Enforcement after skip cancel:', err.message));
     res.json({ success: true, message: 'Skip cancelled' });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
+// POST /api/home/rules/:tracker/kill-states
+app.post('/api/home/rules/:tracker/kill-states', async (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    const configRule = CONFIG.HOME_RULES.find(r => r.tracker === tracker);
+    if (!configRule) return res.status(404).json({ error: 'Kid not found in configuration' });
+
+    const rulesResponse = await pfsenseApiCall('/api/v2/firewall/rules');
+    if (rulesResponse.error) return res.status(500).json({ error: 'Failed to fetch rules', details: rulesResponse.message });
+
+    const allRules = rulesResponse.data || [];
+    const blockRule = allRules.find(r => r.tracker === tracker);
+    if (!blockRule) return res.status(404).json({ error: 'Rule not found on pfSense' });
+
+    await killStatesForSource(ruleSourceAddr(blockRule), configRule.name);
+    logAction('kill-states', configRule.name, 'States killed manually');
+    res.json({ success: true, tracker, name: configRule.name, message: `States killed for ${configRule.name}` });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error', message: err.message });
   }

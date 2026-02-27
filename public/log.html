@@ -186,6 +186,8 @@
 
         .cell-mins { color: #f59e0b; }
         .cell-zero { color: #2a3038; }
+        .cell-sched { color: #3b82f6; font-size: 9px; display: block; margin-top: 2px; }
+        .cell-sched-zero { color: #1e2a3a; font-size: 9px; display: block; margin-top: 2px; }
 
         @media (max-width: 540px) {
             .log-entry { grid-template-columns: 70px 70px 1fr; gap: 8px; }
@@ -206,12 +208,16 @@
         <div class="header-right">
             <span class="refresh-info" id="refreshInfo">Auto-refresh 10s</span>
             <a class="nav-link" href="/schedule">Schedules</a>
+            <a class="nav-link" href="/settings">Settings</a>
         </div>
     </div>
 
     <!-- Weekly timed-access table -->
     <div id="weeklySection" class="weekly-section" style="display:none;">
-        <div class="weekly-label">Timed Access — Last 7 Days</div>
+        <div class="weekly-label">Timed Access — Last 7 Days
+            <span style="color:#f59e0b;margin-left:12px;">&#9679; timed</span>
+            <span style="color:#3b82f6;margin-left:8px;">&#9679; scheduled</span>
+        </div>
         <table class="weekly-table" id="weeklyTable"></table>
     </div>
 
@@ -281,24 +287,51 @@
                 : `${m}m`;
         }
 
-        function renderSummary(entries) {
+        function scheduledMinsForDay(windows, dayOfWeek) {
+            let total = 0;
+            for (const w of (windows || [])) {
+                if (!w.days || !w.days.includes(dayOfWeek)) continue;
+                const [sh, sm] = w.start.split(':').map(Number);
+                const [eh, em] = w.end.split(':').map(Number);
+                total += (eh * 60 + em) - (sh * 60 + sm);
+            }
+            return total;
+        }
+
+        function renderSummary(entries, kids) {
             const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-            const totals = {}; // kid name → minutes
+            const todayDow = new Date().getDay();
+            const timedTotals = {}; // kid name → timed-allow minutes
             for (const e of entries) {
                 if (e.action !== 'timed-allow' || !e.kid || e.ts < todayStart.getTime()) continue;
                 const m = parseInt(e.details) || 0;
-                totals[e.kid] = (totals[e.kid] || 0) + m;
+                timedTotals[e.kid] = (timedTotals[e.kid] || 0) + m;
             }
+
+            // Build schedule totals for today
+            const schedTotals = {}; // kid name → scheduled minutes today
+            for (const kid of (kids || [])) {
+                if (kid.config && kid.config.enabled) {
+                    schedTotals[kid.name] = scheduledMinsForDay(kid.config.windows, todayDow);
+                }
+            }
+
+            const allKids = new Set([...Object.keys(timedTotals), ...Object.keys(schedTotals)]);
             const el = document.getElementById('todaySummary');
-            if (!Object.keys(totals).length) { el.innerHTML = ''; return; }
-            el.innerHTML = Object.entries(totals).map(([name, mins]) => `
+            if (!allKids.size) { el.innerHTML = ''; return; }
+            el.innerHTML = [...allKids].map(name => {
+                const timed = timedTotals[name] || 0;
+                const sched = schedTotals[name] || 0;
+                return `
                 <div style="
                     background:#16191f;border:1px solid #1a1f28;border-radius:4px;
                     padding:8px 14px;font-family:'Share Tech Mono',monospace;font-size:11px;">
                     <span style="color:#555;font-size:9px;display:block;text-transform:uppercase;letter-spacing:1px;margin-bottom:2px;">Today</span>
                     <span style="color:#e0e0e0;font-weight:700;">${name}</span>
-                    <span style="color:#f59e0b;margin-left:10px;">${fmtMins(mins)} timed</span>
-                </div>`).join('');
+                    ${timed ? `<span style="color:#f59e0b;margin-left:10px;">${fmtMins(timed)} timed</span>` : ''}
+                    ${sched ? `<span style="color:#3b82f6;margin-left:8px;">${fmtMins(sched)} sched</span>` : ''}
+                </div>`;
+            }).join('');
         }
 
         function fmtMinsShort(m) {
@@ -345,11 +378,17 @@
             }).join('');
 
             const rows = kids.map(kid => {
-                const cells = days.map((_, i) => {
+                const cells = days.map((d, i) => {
                     const m = totals[kid.name][i];
                     const cls = i === todayIdx ? 'col-today' : '';
                     const valCls = m ? 'cell-mins' : 'cell-zero';
-                    return `<td class="${cls}"><span class="${valCls}">${fmtMinsShort(m)}</span></td>`;
+                    const sched = kid.config && kid.config.enabled
+                        ? scheduledMinsForDay(kid.config.windows, d.getDay())
+                        : 0;
+                    const schedHtml = sched
+                        ? `<span class="cell-sched">${fmtMinsShort(sched)}</span>`
+                        : `<span class="cell-sched-zero">—</span>`;
+                    return `<td class="${cls}"><span class="${valCls}">${fmtMinsShort(m)}</span>${schedHtml}</td>`;
                 }).join('');
                 return `<tr><td class="col-name">${kid.name}</td>${cells}</tr>`;
             }).join('');
@@ -372,7 +411,7 @@
                 const entries = data.log || [];
                 const kids = schedRes.ok ? (await schedRes.json()).kids || [] : [];
                 renderWeekly(entries, kids);
-                renderSummary(entries);
+                renderSummary(entries, kids);
                 renderLog(entries);
                 document.getElementById('refreshInfo').textContent =
                     'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });

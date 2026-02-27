@@ -462,6 +462,15 @@
         }
         .btn.skip-btn:hover { background: rgba(239, 68, 68, 0.07); }
 
+        .btn.kill-states-btn {
+            padding: 5px 10px;
+            font-size: 10px;
+            color: #f59e0b;
+            border-color: rgba(245, 158, 11, 0.35);
+            background: transparent;
+        }
+        .btn.kill-states-btn:hover { background: rgba(245, 158, 11, 0.07); }
+
         /* Per-kid today's activity mini-log */
         .kid-log {
             display: flex;
@@ -525,6 +534,7 @@
             <div class="header-info" id="headerInfo">Connecting...</div>
             <a class="nav-link" href="/schedule">Schedules</a>
             <a class="nav-link" href="/log">Log</a>
+            <a class="nav-link" href="/settings">Settings</a>
         </div>
     </div>
 
@@ -587,6 +597,7 @@
             'schedule-toggle': { label: 'Sched toggle',  cls: 'kle-neutral' },
             'skip-next':       { label: 'Skip next',     cls: 'kle-block' },
             'skip-cancel':     { label: 'Skip cancel',   cls: 'kle-neutral' },
+            'kill-states':     { label: 'States killed', cls: 'kle-neutral' },
         };
 
         function renderTimedButtons() {
@@ -792,6 +803,7 @@
                     ${schedInfoRow}
                     ${skipRow}
                     ${timerRow}
+                    <button class="btn kill-states-btn" onclick="killStates(${kid.tracker})" style="margin-top:4px;">Kill States</button>
                     ${logHtml}
                 </div>`;
             }).join('');
@@ -948,6 +960,18 @@
                 await fetchHomeRules();
             } catch (err) {
                 showToast('Failed to cancel skip', true);
+            }
+        }
+
+        async function killStates(tracker) {
+            try {
+                const res = await fetch(`/api/home/rules/${tracker}/kill-states`, { method: 'POST' });
+                if (!res.ok) throw new Error('Failed');
+                const data = await res.json();
+                showToast(data.message);
+                await fetchHomeRules();
+            } catch (err) {
+                showToast('Failed to kill states', true);
             }
         }
 

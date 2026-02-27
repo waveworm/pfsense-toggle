@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings — Kids Internet</title>
+    <meta name="theme-color" content="#0d0f14">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="KidsNet">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { overscroll-behavior: none; }
+        body {
+            background: #0d0f14;
+            color: #e0e0e0;
+            font-family: 'Barlow', sans-serif;
+            line-height: 1.6;
+            min-height: 100vh;
+            padding: 20px;
+            max-width: 100vw;
+            overflow-x: hidden;
+        }
+
+        /* ── Header ── */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #1a1f28;
+        }
+        .header-left { display: flex; align-items: center; gap: 16px; }
+        .back-link {
+            display: flex; align-items: center; gap: 8px;
+            color: #555; text-decoration: none;
+            font-size: 12px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 1px;
+            transition: color 200ms;
+        }
+        .back-link:hover { color: #e0e0e0; }
+        .nav-link {
+            font-size: 11px; padding: 5px 10px;
+            border: 1px solid #2a3038; border-radius: 4px;
+            color: #555; text-decoration: none;
+            font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+            transition: all 200ms;
+        }
+        .nav-link:hover { color: #e0e0e0; border-color: #3a4048; }
+        .header-divider { width: 1px; height: 20px; background: #2a3038; }
+        .header-title h1 {
+            font-size: 22px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 2px;
+        }
+
+        /* ── Section headings ── */
+        .section-heading {
+            font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 2px;
+            color: #555; margin-bottom: 12px; margin-top: 28px;
+        }
+        .section-heading:first-of-type { margin-top: 0; }
+
+        /* ── Cards ── */
+        .card {
+            background: #16191f;
+            border: 1px solid #1a1f28;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 12px;
+        }
+
+        /* ── Form fields ── */
+        .field-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+        .field-row:last-of-type { margin-bottom: 0; }
+        .field-label {
+            font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 1px; color: #555;
+        }
+        .field-input {
+            padding: 9px 12px;
+            background: #0d0f14;
+            border: 1px solid #2a3038;
+            color: #e0e0e0;
+            border-radius: 4px;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 13px;
+            width: 100%; max-width: 480px;
+            transition: border-color 200ms;
+        }
+        .field-input:focus { outline: none; border-color: rgba(34,197,94,0.4); }
+        .field-input::placeholder { color: #444; }
+
+        /* ── Buttons ── */
+        .btn {
+            padding: 10px 18px;
+            background: #1a1f28;
+            border: 1px solid #2a3038;
+            color: #e0e0e0; cursor: pointer;
+            font-family: 'Barlow', sans-serif;
+            font-size: 12px; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 1px;
+            border-radius: 4px; transition: all 200ms ease;
+        }
+        .btn:hover { background: #252d35; border-color: #3a4048; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn.primary { color: #22c55e; border-color: #22c55e; }
+        .btn.primary:hover { background: rgba(34,197,94,0.1); }
+        .btn.sm { padding: 5px 10px; font-size: 11px; }
+
+        /* ── Save bar ── */
+        .save-bar {
+            display: flex; align-items: center; gap: 14px;
+            margin-top: 18px; padding-top: 18px;
+            border-top: 1px solid #1a1f28;
+        }
+        .save-hint { font-family: 'Share Tech Mono', monospace; font-size: 11px; color: #444; }
+
+        /* ── Kid device cards ── */
+        .kid-card {
+            background: #16191f;
+            border: 1px solid #1a1f28;
+            border-radius: 6px;
+            padding: 18px 20px;
+            margin-bottom: 10px;
+        }
+        .kid-card-header {
+            display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px;
+        }
+        .kid-card-name {
+            font-size: 14px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 1.5px;
+        }
+        .kid-alias-name {
+            font-family: 'Share Tech Mono', monospace; font-size: 11px; color: #555;
+        }
+
+        /* ── IP list ── */
+        .ip-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; }
+        .ip-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 7px 10px;
+            background: #0d0f14; border: 1px solid #1a1f28; border-radius: 4px;
+        }
+        .ip-addr { font-family: 'Share Tech Mono', monospace; font-size: 13px; color: #ccc; }
+        .ip-remove {
+            background: none; border: none; color: #444;
+            cursor: pointer; font-size: 15px; line-height: 1;
+            padding: 2px 4px; transition: color 150ms;
+        }
+        .ip-remove:hover { color: #ef4444; }
+        .no-ips {
+            font-family: 'Share Tech Mono', monospace; font-size: 11px; color: #444;
+            padding: 4px 0; margin-bottom: 10px;
+        }
+
+        /* ── Add IP row ── */
+        .add-ip-row { display: flex; gap: 8px; align-items: center; }
+        .add-ip-input {
+            padding: 7px 10px;
+            background: #0d0f14; border: 1px solid #2a3038;
+            color: #e0e0e0; border-radius: 4px;
+            font-family: 'Share Tech Mono', monospace; font-size: 13px;
+            width: 180px; transition: border-color 200ms;
+        }
+        .add-ip-input:focus { outline: none; border-color: rgba(34,197,94,0.4); }
+        .add-ip-input::placeholder { color: #444; }
+
+        /* ── Loading text ── */
+        .loading-text {
+            font-family: 'Share Tech Mono', monospace; font-size: 12px;
+            color: #444; padding: 20px 0;
+        }
+
+        /* ── Toast ── */
+        .toast {
+            position: fixed; bottom: 20px; right: 20px;
+            padding: 14px 22px; background: #16191f;
+            border: 1px solid #22c55e; border-radius: 4px;
+            color: #22c55e; font-family: 'Share Tech Mono', monospace;
+            font-size: 12px; z-index: 1000; animation: slideInUp 0.3s ease;
+        }
+        .toast.error { border-color: #ef4444; color: #ef4444; }
+        @keyframes slideInUp {
+            from { transform: translateY(50px); opacity: 0; }
+            to   { transform: translateY(0);    opacity: 1; }
+        }
+
+        @media (max-width: 480px) {
+            .add-ip-input { width: 140px; }
+            .field-input { font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div class="header-left">
+            <a class="back-link" href="/">&#8592; Kids Internet</a>
+            <div class="header-divider"></div>
+            <div class="header-title"><h1>Settings</h1></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;">
+            <a class="nav-link" href="/schedule">Schedules</a>
+            <a class="nav-link" href="/log">Log</a>
+        </div>
+    </div>
+
+    <!-- ── Connection Settings ── -->
+    <div class="section-heading">Connection Settings</div>
+    <div class="card">
+        <div class="field-row">
+            <label class="field-label" for="pfsenseUrl">pfSense URL</label>
+            <input class="field-input" id="pfsenseUrl" type="text"
+                placeholder="https://10.40.0.1:5555">
+        </div>
+        <div class="field-row">
+            <label class="field-label" for="pfsenseApiKey">pfSense API Key</label>
+            <input class="field-input" id="pfsenseApiKey" type="password"
+                placeholder="Leave blank to keep existing key" autocomplete="new-password">
+        </div>
+        <div class="field-row">
+            <label class="field-label" for="unifiUrl">UniFi Dashboard URL</label>
+            <input class="field-input" id="unifiUrl" type="text"
+                placeholder="http://100.66.226.93:8000">
+        </div>
+        <div class="field-row">
+            <label class="field-label" for="unifiSite">UniFi Site</label>
+            <input class="field-input" id="unifiSite" type="text"
+                placeholder="default" style="max-width:200px;">
+        </div>
+        <div class="field-row">
+            <label class="field-label" for="ntfyUrl">ntfy.sh Push URL</label>
+            <input class="field-input" id="ntfyUrl" type="text"
+                placeholder="https://ntfy.sh/my-topic  (blank to disable)">
+        </div>
+        <div class="save-bar">
+            <button class="btn primary" id="saveSettingsBtn" onclick="saveSettings()">Save Settings</button>
+            <span class="save-hint" id="saveSettingsHint"></span>
+        </div>
+    </div>
+
+    <!-- ── Device Management ── -->
+    <div class="section-heading">Device Management</div>
+    <div id="deviceList">
+        <div class="loading-text">Loading devices...</div>
+    </div>
+
+    <script>
+        // ── State ────────────────────────────────────────────────────
+        let allKids = [];                 // [{ tracker, name }]
+        const kidDevices = {};            // tracker → { aliasName, ips }
+
+        // ── Toast ────────────────────────────────────────────────────
+        function showToast(msg, isError = false) {
+            const t = document.createElement('div');
+            t.className = `toast${isError ? ' error' : ''}`;
+            t.textContent = msg;
+            document.body.appendChild(t);
+            setTimeout(() => {
+                t.style.animation = 'slideInUp 0.3s ease reverse';
+                setTimeout(() => t.remove(), 300);
+            }, 3000);
+        }
+
+        // ── Settings ─────────────────────────────────────────────────
+        async function loadSettings() {
+            try {
+                const res  = await fetch('/api/settings');
+                const data = await res.json();
+                document.getElementById('pfsenseUrl').value = data.pfsenseUrl || '';
+                document.getElementById('pfsenseApiKey').placeholder =
+                    data.hasApiKey ? 'Key is set — leave blank to keep' : 'Enter API key';
+                document.getElementById('unifiUrl').value  = data.unifiUrl || '';
+                document.getElementById('unifiSite').value = data.unifiSite || '';
+                document.getElementById('ntfyUrl').value   = data.ntfyUrl || '';
+            } catch (e) {
+                showToast('Failed to load settings', true);
+            }
+        }
+
+        async function saveSettings() {
+            const btn  = document.getElementById('saveSettingsBtn');
+            const hint = document.getElementById('saveSettingsHint');
+            btn.disabled = true;
+            btn.textContent = 'Saving...';
+            hint.textContent = '';
+            try {
+                const body = {
+                    pfsenseUrl:    document.getElementById('pfsenseUrl').value.trim(),
+                    pfsenseApiKey: document.getElementById('pfsenseApiKey').value,
+                    unifiUrl:      document.getElementById('unifiUrl').value.trim(),
+                    unifiSite:     document.getElementById('unifiSite').value.trim(),
+                    ntfyUrl:       document.getElementById('ntfyUrl').value.trim()
+                };
+                const res = await fetch('/api/settings', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                if (!res.ok) throw new Error((await res.json()).error || 'Save failed');
+                // Clear key field; update placeholder to show key is set
+                document.getElementById('pfsenseApiKey').value = '';
+                document.getElementById('pfsenseApiKey').placeholder = 'Key is set — leave blank to keep';
+                hint.textContent = '✓ Saved';
+                hint.style.color = '#22c55e';
+                showToast('Settings saved');
+                setTimeout(() => { hint.textContent = ''; }, 4000);
+            } catch (e) {
+                hint.textContent = e.message;
+                hint.style.color = '#ef4444';
+                showToast(e.message, true);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Save Settings';
+            }
+        }
+
+        // ── Device Management ─────────────────────────────────────────
+        async function loadDevices() {
+            const container = document.getElementById('deviceList');
+            try {
+                const schedRes  = await fetch('/api/schedules');
+                const schedData = await schedRes.json();
+                allKids = schedData.kids || [];
+
+                if (!allKids.length) {
+                    container.innerHTML = '<div class="loading-text">No kids configured.</div>';
+                    return;
+                }
+
+                // Fetch alias IPs for all kids in parallel
+                const results = await Promise.allSettled(
+                    allKids.map(k => fetch(`/api/kids/${k.tracker}/devices`).then(r => r.json()))
+                );
+
+                allKids.forEach((kid, i) => {
+                    const r = results[i];
+                    const d = r.status === 'fulfilled' ? r.value : null;
+                    kidDevices[kid.tracker] = (d && d.success)
+                        ? { aliasName: d.aliasName, ips: d.ips }
+                        : { aliasName: d?.error || 'error', ips: [] };
+                });
+
+                container.innerHTML = '';
+                allKids.forEach(kid => container.appendChild(buildKidCard(kid)));
+            } catch (e) {
+                container.innerHTML =
+                    `<div class="loading-text" style="color:#ef4444;">Failed to load: ${e.message}</div>`;
+            }
+        }
+
+        function buildKidCard(kid) {
+            const el = document.createElement('div');
+            el.className = 'kid-card';
+            el.id = `kid-card-${kid.tracker}`;
+            refreshKidCardHTML(kid, el);
+            return el;
+        }
+
+        function refreshKidCardHTML(kid, el) {
+            const { aliasName, ips } = kidDevices[kid.tracker] || { aliasName: '—', ips: [] };
+            const ipRows = ips.length
+                ? ips.map(ip => `
+                    <div class="ip-row">
+                        <span class="ip-addr">${ip}</span>
+                        <button class="ip-remove"
+                            onclick="removeDevice(${kid.tracker},'${ip}')"
+                            title="Remove">&#x2715;</button>
+                    </div>`).join('')
+                : '<div class="no-ips">No IPs — add one below</div>';
+
+            el.innerHTML = `
+                <div class="kid-card-header">
+                    <span class="kid-card-name">${kid.name}</span>
+                    <span class="kid-alias-name">${aliasName}</span>
+                </div>
+                <div class="ip-list">${ipRows}</div>
+                <div class="add-ip-row">
+                    <input class="add-ip-input" id="add-ip-${kid.tracker}"
+                        type="text" placeholder="192.168.x.x"
+                        onkeydown="if(event.key==='Enter') addDevice(${kid.tracker})">
+                    <button class="btn sm primary"
+                        onclick="addDevice(${kid.tracker})">+ Add</button>
+                </div>`;
+        }
+
+        function getKid(tracker) {
+            return allKids.find(k => String(k.tracker) === String(tracker));
+        }
+
+        async function addDevice(tracker) {
+            const input = document.getElementById(`add-ip-${tracker}`);
+            const ip    = (input?.value || '').trim();
+            if (!ip) return;
+            try {
+                const res  = await fetch(`/api/kids/${tracker}/devices`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to add');
+                kidDevices[tracker].ips = data.ips;
+                input.value = '';
+                const card = document.getElementById(`kid-card-${tracker}`);
+                if (card) refreshKidCardHTML(getKid(tracker), card);
+                showToast(`Added ${ip}`);
+            } catch (e) {
+                showToast(e.message, true);
+            }
+        }
+
+        async function removeDevice(tracker, ip) {
+            try {
+                const res  = await fetch(`/api/kids/${tracker}/devices/${encodeURIComponent(ip)}`,
+                    { method: 'DELETE' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to remove');
+                kidDevices[tracker].ips = data.ips;
+                const card = document.getElementById(`kid-card-${tracker}`);
+                if (card) refreshKidCardHTML(getKid(tracker), card);
+                showToast(`Removed ${ip}`);
+            } catch (e) {
+                showToast(e.message, true);
+            }
+        }
+
+        // ── Init ─────────────────────────────────────────────────────
+        loadSettings();
+        loadDevices();
+        if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+    </script>
+</body>
+</html>
