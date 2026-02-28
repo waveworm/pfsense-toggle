@@ -106,17 +106,34 @@ function timeToMinutes(t) {
   return h * 60 + (m || 0);
 }
 
+// Returns today's date string 'YYYY-MM-DD' in local timezone (TZ set via process.env.TZ)
+function getTodayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// Returns the effective day-of-week for a kid, applying any day override.
+// treatAs 'weekend' → 6 (Saturday), 'weekday' → 1 (Monday)
+function getEffectiveDayOfWeek(tracker) {
+  const override = scheduleConfig[String(tracker)]?.dayOverride;
+  if (override && override.date === getTodayStr()) {
+    return override.treatAs === 'weekend' ? 6 : 1;
+  }
+  return new Date().getDay();
+}
+
 function computeScheduleInfo(tracker) {
   const config = scheduleConfig[String(tracker)];
   if (!config || !config.enabled || !Array.isArray(config.windows) || !config.windows.length) {
     return { enabled: !!(config && config.enabled), active: false, windowEnd: null, nextStart: null, nextEnd: null };
   }
 
-  const now    = new Date();
-  const today  = now.getDay(); // 0=Sun … 6=Sat
-  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const now         = new Date();
+  const today       = getEffectiveDayOfWeek(tracker); // may be overridden for today
+  const actualToday = now.getDay();                    // real day, used for future offsets
+  const nowMin      = now.getHours() * 60 + now.getMinutes();
 
-  // Check if currently inside any window
+  // Check if currently inside any window (uses overridden day)
   let windowEndMs = null;
   for (const win of config.windows) {
     if (!win.days.includes(today)) continue;
@@ -137,7 +154,8 @@ function computeScheduleInfo(tracker) {
   let nextStartMs = Infinity;
   let nextEndMs   = null;
   for (let offset = 0; offset < 7; offset++) {
-    const checkDay = (today + offset) % 7;
+    // For today (offset=0) use the potentially-overridden day; future days use actual calendar
+    const checkDay = offset === 0 ? today : (actualToday + offset) % 7;
     for (const win of config.windows) {
       if (!win.days.includes(checkDay)) continue;
       const startMin = timeToMinutes(win.start);
@@ -205,6 +223,54 @@ function logAction(action, kid, details) {
   actionLog.unshift({ ts: Date.now(), action, kid: kid || null, details: details || null });
   if (actionLog.length > 1000) actionLog.length = 1000;
   saveActionLog();
+}
+
+// ============================================================================
+// Activity Timeline — reconstruct per-kid allow/block history for today
+// ============================================================================
+const ACTION_TO_STATE = {
+  'toggle-allow':    'allowed',
+  'allow-all':       'allowed',
+  'timed-allow':     'allowed',
+  'timed-allow-all': 'allowed',
+  'schedule-allow':  'allowed',
+  'skip-cancel':     'allowed',
+  'toggle-block':    'blocked',
+  'block-all':       'blocked',
+  'timer-expired':   'blocked',
+  'timer-cancel':    'blocked',
+  'schedule-block':  'blocked',
+  'skip-next':       'blocked',
+};
+
+function buildTimeline(kidName) {
+  const now = Date.now();
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const dayStart = midnight.getTime();
+
+  // Match entries for this kid or global (null kid) actions
+  const isRelevant = e => ACTION_TO_STATE[e.action] && (!e.kid || e.kid === kidName);
+
+  // Find initial state at midnight from the last qualifying entry before today
+  const lastBefore = actionLog.find(e => e.ts < dayStart && isRelevant(e));
+  let currentState = lastBefore ? ACTION_TO_STATE[lastBefore.action] : 'unknown';
+
+  // Today's entries oldest-first
+  const todayEntries = actionLog
+    .filter(e => e.ts >= dayStart && isRelevant(e))
+    .sort((a, b) => a.ts - b.ts);
+
+  const segments = [];
+  let segStart = dayStart;
+  for (const entry of todayEntries) {
+    const newState = ACTION_TO_STATE[entry.action];
+    if (newState === currentState) continue; // no state change
+    if (entry.ts > segStart) segments.push({ start: segStart, end: entry.ts, state: currentState });
+    currentState = newState;
+    segStart = entry.ts;
+  }
+  if (segStart < now) segments.push({ start: segStart, end: now, state: currentState });
+  return segments;
 }
 
 // ============================================================================
@@ -533,6 +599,17 @@ async function enforceSchedules() {
       if (Date.now() >= su) activeSkips.delete(t);
     }
 
+    // Clean up day overrides from previous days
+    const todayStr = getTodayStr();
+    let overridesChanged = false;
+    for (const config of Object.values(scheduleConfig)) {
+      if (config.dayOverride && config.dayOverride.date !== todayStr) {
+        delete config.dayOverride;
+        overridesChanged = true;
+      }
+    }
+    if (overridesChanged) saveSchedules();
+
     const rulesRes = await pfsenseApiCall('/api/v2/firewall/rules');
     if (rulesRes.error) {
       console.error('Schedule enforcement: failed to fetch pfSense rules');
@@ -624,6 +701,15 @@ app.get('/settings', (_req, res) => {
 // GET /api/log — return audit log
 app.get('/api/log', (_req, res) => {
   res.json({ success: true, log: actionLog });
+});
+
+// GET /api/home/timeline — per-kid today's allow/block timeline segments
+app.get('/api/home/timeline', (_req, res) => {
+  const timelines = {};
+  for (const kid of CONFIG.HOME_RULES) {
+    timelines[kid.tracker] = buildTimeline(kid.name);
+  }
+  res.json({ success: true, timelines });
 });
 
 // ============================================================================
@@ -773,6 +859,85 @@ app.delete('/api/kids/:tracker/devices/:ip', async (req, res) => {
   }
 });
 
+// GET /api/kids/:tracker/macs — list known MACs with online status and excluded flag
+app.get('/api/kids/:tracker/macs', async (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    if (!CONFIG.HOME_RULES.find(r => r.tracker === tracker))
+      return res.status(404).json({ error: 'Kid not found' });
+
+    const knownMacs = [...(kidKnownMacs.get(tracker) || [])];
+    let unifiClients = [];
+    if (CONFIG.UNIFI_URL) {
+      const cr = await unifiApiCall('GET', `/api/clients?site=${CONFIG.UNIFI_SITE}`);
+      if (!cr.error && Array.isArray(cr)) unifiClients = cr;
+    }
+
+    const macs = knownMacs.map(mac => {
+      const client = unifiClients.find(c => c.mac === mac);
+      return {
+        mac,
+        hostname: client?.hostname || null,
+        ip:       client?.ip || null,
+        online:   !!client,
+        excluded: unifiExcludedMacs.has(mac.toLowerCase()),
+      };
+    });
+    res.json({ success: true, macs });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
+// DELETE /api/kids/:tracker/macs/:mac — remove a MAC from known-macs
+app.delete('/api/kids/:tracker/macs/:mac', (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    if (!CONFIG.HOME_RULES.find(r => r.tracker === tracker))
+      return res.status(404).json({ error: 'Kid not found' });
+
+    const mac = req.params.mac.toLowerCase();
+    const known = kidKnownMacs.get(tracker);
+    if (!known || !known.has(mac))
+      return res.status(404).json({ error: 'MAC not found' });
+
+    known.delete(mac);
+    saveKnownMacs();
+    res.json({ success: true, message: `Removed ${mac}` });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
+// PUT /api/kids/:tracker/macs/:mac/excluded — toggle UniFi exclusion for a MAC
+app.put('/api/kids/:tracker/macs/:mac/excluded', (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    if (!CONFIG.HOME_RULES.find(r => r.tracker === tracker))
+      return res.status(404).json({ error: 'Kid not found' });
+
+    const mac = req.params.mac.toLowerCase();
+    const { excluded } = req.body;
+    if (excluded) {
+      unifiExcludedMacs.add(mac);
+    } else {
+      unifiExcludedMacs.delete(mac);
+    }
+
+    // Persist excluded list to settings.json (merge with existing)
+    let saved = {};
+    try {
+      if (fs.existsSync(SETTINGS_FILE)) saved = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
+    } catch (_) {}
+    saved.unifiExcludedMacs = [...unifiExcludedMacs];
+    saveSettings(saved);
+
+    res.json({ success: true, excluded, message: excluded ? `${mac} excluded from UniFi` : `${mac} included in UniFi` });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
 // ============================================================================
 // HOME / Kids routes
 // ============================================================================
@@ -785,6 +950,13 @@ app.get('/api/home/rules', async (req, res) => {
       return res.status(500).json({ error: 'Failed to fetch rules from pfSense', details: rulesResponse.message });
     }
 
+    // Fetch UniFi client list once for device status (best-effort — don't fail if unavailable)
+    let unifiClients = [];
+    if (CONFIG.UNIFI_URL) {
+      const cr = await unifiApiCall('GET', `/api/clients?site=${CONFIG.UNIFI_SITE}`);
+      if (!cr.error && Array.isArray(cr)) unifiClients = cr;
+    }
+
     const allRules = rulesResponse.data || [];
     const now = Date.now();
     const result = CONFIG.HOME_RULES.map(configRule => {
@@ -793,6 +965,19 @@ app.get('/api/home/rules', async (req, res) => {
       const schedInfo  = computeScheduleInfo(String(configRule.tracker));
       const skipUntilMs = activeSkips.get(configRule.tracker);
       const skipUntil  = (skipUntilMs && now < skipUntilMs) ? skipUntilMs : null;
+
+      // Build per-kid device list from known MACs, annotated with live UniFi status
+      const knownMacs = [...(kidKnownMacs.get(configRule.tracker) || [])];
+      const devices = knownMacs.map(mac => {
+        const client = unifiClients.find(c => c.mac === mac);
+        return {
+          mac,
+          hostname: client?.hostname || null,
+          ip:       client?.ip || null,
+          online:   !!client,
+          is_wired: client?.is_wired || false,
+        };
+      });
 
       return {
         tracker:           configRule.tracker,
@@ -806,7 +991,9 @@ app.get('/api/home/rules', async (req, res) => {
         scheduleNextEnd:   schedInfo.nextEnd,
         timerEndTime:      timer ? timer.endTime : null,
         skipUntil,
-        found:             !!blockRule
+        found:             !!blockRule,
+        devices,
+        dayOverride:       scheduleConfig[String(configRule.tracker)]?.dayOverride || null,
       };
     });
 
@@ -1105,6 +1292,48 @@ app.post('/api/home/rules/:tracker/cancel-timer', async (req, res) => {
   }
 });
 
+// POST /api/home/rules/:tracker/extend-timer  body: { minutes: N }
+// Adds N minutes to an existing timer (or starts a fresh one if none is running).
+app.post('/api/home/rules/:tracker/extend-timer', async (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    const minutes = parseInt(req.body.minutes, 10);
+    if (!minutes || minutes < 1 || minutes > 120) {
+      return res.status(400).json({ error: 'minutes must be 1–120' });
+    }
+    const configRule = CONFIG.HOME_RULES.find(r => r.tracker === tracker);
+    if (!configRule) return res.status(404).json({ error: 'Kid not found' });
+
+    const existing = activeTimers.get(tracker);
+    const baseTime = existing ? existing.endTime : Date.now();
+    const newEndTime = baseTime + minutes * 60 * 1000;
+
+    if (existing) clearTimeout(existing.timeoutId);
+
+    // If the kid is currently blocked (no active timer), allow them now
+    if (!existing) {
+      const rulesRes = await pfsenseApiCall('/api/v2/firewall/rules');
+      if (!rulesRes.error) {
+        const blockRule = (rulesRes.data || []).find(r => r.tracker === tracker);
+        if (blockRule && !blockRule.disabled) {
+          await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: blockRule.id, disabled: true });
+          await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
+          await unifiUnblockKid(tracker, configRule.name, ruleSourceAddr(blockRule));
+        }
+      }
+    }
+
+    const delay = newEndTime - Date.now();
+    const timeoutId = setTimeout(() => blockKidNow(tracker), delay);
+    activeTimers.set(tracker, { timeoutId, endTime: newEndTime, kidName: configRule.name });
+    logAction('timed-allow', configRule.name, `+${minutes} min`);
+    res.json({ success: true, tracker, name: configRule.name, minutes, endTime: newEndTime,
+      message: `Added ${minutes} min — ${configRule.name} allowed until ${new Date(newEndTime).toLocaleTimeString()}` });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
 // ============================================================================
 // Skip-next routes
 // ============================================================================
@@ -1157,6 +1386,37 @@ app.post('/api/home/rules/:tracker/cancel-skip', async (req, res) => {
     logAction('skip-cancel', skipRule?.name || String(tracker), 'Skip cancelled');
     enforceSchedules().catch(err => console.error('Enforcement after skip cancel:', err.message));
     res.json({ success: true, message: 'Skip cancelled' });
+  } catch (err) {
+    res.status(500).json({ error: 'Internal server error', message: err.message });
+  }
+});
+
+// POST /api/home/rules/:tracker/day-override
+// Body: { treatAs: 'weekend' | 'weekday' | null }
+// Sets or clears a day-type override for today so schedule windows match the right day pattern.
+app.post('/api/home/rules/:tracker/day-override', (req, res) => {
+  try {
+    const tracker = parseInt(req.params.tracker, 10);
+    const configRule = CONFIG.HOME_RULES.find(r => r.tracker === tracker);
+    if (!configRule) return res.status(404).json({ error: 'Kid not found' });
+
+    const { treatAs } = req.body; // 'weekend' | 'weekday' | null to clear
+    const key = String(tracker);
+    if (!scheduleConfig[key]) scheduleConfig[key] = { enabled: false, windows: [] };
+
+    if (!treatAs) {
+      delete scheduleConfig[key].dayOverride;
+    } else if (treatAs === 'weekend' || treatAs === 'weekday') {
+      scheduleConfig[key].dayOverride = { date: getTodayStr(), treatAs };
+    } else {
+      return res.status(400).json({ error: 'treatAs must be "weekend", "weekday", or null' });
+    }
+
+    saveSchedules();
+    enforceSchedules().catch(err => console.error('Enforcement after day-override:', err.message));
+    const msg = treatAs ? `Today treating as ${treatAs}` : 'Day override cleared';
+    logAction('day-override', configRule.name, msg);
+    res.json({ success: true, message: msg });
   } catch (err) {
     res.status(500).json({ error: 'Internal server error', message: err.message });
   }

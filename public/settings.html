@@ -178,6 +178,36 @@
             color: #444; padding: 20px 0;
         }
 
+        /* ── Known MACs ── */
+        .mac-list { display: flex; flex-direction: column; gap: 5px; margin-bottom: 4px; }
+        .mac-row {
+            display: flex; align-items: center; gap: 8px;
+            padding: 7px 10px;
+            background: #0d0f14; border: 1px solid #1a1f28; border-radius: 4px;
+        }
+        .mac-dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: #333; flex-shrink: 0;
+        }
+        .mac-dot.online { background: #22c55e; box-shadow: 0 0 4px #22c55e88; }
+        .mac-addr { font-family: 'Share Tech Mono', monospace; font-size: 12px; color: #ccc; flex: 1; }
+        .mac-host { font-family: 'Share Tech Mono', monospace; font-size: 10px; color: #555; margin-left: 4px; }
+        .mac-exclude-btn {
+            font-family: 'Share Tech Mono', monospace; font-size: 9px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.5px;
+            padding: 2px 7px; border-radius: 3px; cursor: pointer;
+            border: 1px solid #2a3038; background: #1a1f28; color: #555;
+            transition: all 150ms;
+        }
+        .mac-exclude-btn:hover { color: #e0e0e0; border-color: #3a4048; }
+        .mac-exclude-btn.excluded { color: #f59e0b; border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.1); }
+        .mac-remove {
+            background: none; border: none; color: #333;
+            cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px;
+            transition: color 150ms;
+        }
+        .mac-remove:hover { color: #ef4444; }
+
         /* ── Toast ── */
         .toast {
             position: fixed; bottom: 20px; right: 20px;
@@ -252,10 +282,21 @@
         <div class="loading-text">Loading devices...</div>
     </div>
 
+    <!-- ── Known MACs ── -->
+    <div class="section-heading" style="margin-top:32px;">Known MACs</div>
+    <p style="font-family:'Share Tech Mono',monospace;font-size:10px;color:#444;margin-bottom:12px;">
+        Every MAC address ever seen per kid. Used to block offline devices. Green dot = currently online in UniFi.
+        Excluded MACs are skipped during UniFi blocking (pfSense firewall still applies).
+    </p>
+    <div id="macList">
+        <div class="loading-text">Loading MACs...</div>
+    </div>
+
     <script>
         // ── State ────────────────────────────────────────────────────
         let allKids = [];                 // [{ tracker, name }]
         const kidDevices = {};            // tracker → { aliasName, ips }
+        const kidMacs = {};               // tracker → [{ mac, hostname, ip, online, excluded }]
 
         // ── Toast ────────────────────────────────────────────────────
         function showToast(msg, isError = false) {
@@ -432,9 +473,119 @@
             }
         }
 
+        // ── Known MACs ───────────────────────────────────────────────
+        async function loadMacs() {
+            const container = document.getElementById('macList');
+            if (!allKids.length) {
+                // allKids may not be loaded yet — load from schedules
+                try {
+                    const r = await fetch('/api/schedules');
+                    allKids = (await r.json()).kids || [];
+                } catch { container.innerHTML = '<div class="loading-text" style="color:#ef4444;">Failed to load kids</div>'; return; }
+            }
+            if (!allKids.length) { container.innerHTML = '<div class="loading-text">No kids configured.</div>'; return; }
+
+            try {
+                const results = await Promise.allSettled(
+                    allKids.map(k => fetch(`/api/kids/${k.tracker}/macs`).then(r => r.json()))
+                );
+                allKids.forEach((kid, i) => {
+                    const r = results[i];
+                    kidMacs[kid.tracker] = r.status === 'fulfilled' && r.value.success ? r.value.macs : [];
+                });
+                renderMacList();
+            } catch (e) {
+                container.innerHTML = `<div class="loading-text" style="color:#ef4444;">Failed: ${e.message}</div>`;
+            }
+        }
+
+        function renderMacList() {
+            const container = document.getElementById('macList');
+            container.innerHTML = '';
+            allKids.forEach(kid => {
+                const macs = kidMacs[kid.tracker] || [];
+                const macRows = macs.length
+                    ? macs.map(m => {
+                        const label = m.hostname || m.mac;
+                        const title = `${m.mac}${m.ip ? ' · ' + m.ip : ''}${m.online ? ' · online' : ' · offline'}`;
+                        return `<div class="mac-row" id="mac-row-${kid.tracker}-${m.mac.replace(/:/g,'')}">
+                            <span class="mac-dot${m.online ? ' online' : ''}" title="${title}"></span>
+                            <span class="mac-addr">${m.mac}</span>
+                            ${m.hostname ? `<span class="mac-host">${m.hostname}</span>` : ''}
+                            <button class="mac-exclude-btn${m.excluded ? ' excluded' : ''}"
+                                onclick="toggleMacExcluded(${kid.tracker},'${m.mac}',${!m.excluded})"
+                                title="${m.excluded ? 'Currently excluded from UniFi — click to include' : 'Click to exclude from UniFi blocking'}">
+                                ${m.excluded ? 'excluded' : 'unifi'}
+                            </button>
+                            <button class="mac-remove" onclick="removeMac(${kid.tracker},'${m.mac}')" title="Remove from known MACs">&#x2715;</button>
+                        </div>`;
+                    }).join('')
+                    : '<div class="loading-text" style="padding:6px 0;">No MACs recorded yet</div>';
+
+                const card = document.createElement('div');
+                card.className = 'kid-card';
+                card.id = `mac-kid-${kid.tracker}`;
+                card.innerHTML = `
+                    <div class="kid-card-header">
+                        <span class="kid-card-name">${kid.name}</span>
+                        <span class="kid-alias-name">${macs.length} MAC${macs.length !== 1 ? 's' : ''}</span>
+                    </div>
+                    <div class="mac-list">${macRows}</div>`;
+                container.appendChild(card);
+            });
+        }
+
+        async function toggleMacExcluded(tracker, mac, excluded) {
+            try {
+                const res = await fetch(`/api/kids/${tracker}/macs/${encodeURIComponent(mac)}/excluded`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ excluded })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+                // Update local state and re-render just this kid's card
+                const m = kidMacs[tracker]?.find(x => x.mac === mac);
+                if (m) m.excluded = excluded;
+                const card = document.getElementById(`mac-kid-${tracker}`);
+                if (card) {
+                    const kid = allKids.find(k => k.tracker === tracker);
+                    if (kid) {
+                        // Re-render just the mac-list portion
+                        const macs = kidMacs[tracker] || [];
+                        card.querySelector('.mac-list').innerHTML = macs.map(m2 => {
+                            const title = `${m2.mac}${m2.ip ? ' · ' + m2.ip : ''}`;
+                            return `<div class="mac-row">
+                                <span class="mac-dot${m2.online ? ' online' : ''}"></span>
+                                <span class="mac-addr">${m2.mac}</span>
+                                ${m2.hostname ? `<span class="mac-host">${m2.hostname}</span>` : ''}
+                                <button class="mac-exclude-btn${m2.excluded ? ' excluded' : ''}"
+                                    onclick="toggleMacExcluded(${tracker},'${m2.mac}',${!m2.excluded})">
+                                    ${m2.excluded ? 'excluded' : 'unifi'}
+                                </button>
+                                <button class="mac-remove" onclick="removeMac(${tracker},'${m2.mac}')">&#x2715;</button>
+                            </div>`;
+                        }).join('');
+                    }
+                }
+                showToast(data.message);
+            } catch (e) { showToast(e.message, true); }
+        }
+
+        async function removeMac(tracker, mac) {
+            try {
+                const res = await fetch(`/api/kids/${tracker}/macs/${encodeURIComponent(mac)}`, { method: 'DELETE' });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+                kidMacs[tracker] = (kidMacs[tracker] || []).filter(m => m.mac !== mac);
+                renderMacList();
+                showToast(data.message);
+            } catch (e) { showToast(e.message, true); }
+        }
+
         // ── Init ─────────────────────────────────────────────────────
         loadSettings();
-        loadDevices();
+        loadDevices().then(() => loadMacs());
         if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
     </script>
 </body>

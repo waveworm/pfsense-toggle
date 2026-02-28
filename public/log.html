@@ -189,6 +189,36 @@
         .cell-sched { color: #3b82f6; font-size: 9px; display: block; margin-top: 2px; }
         .cell-sched-zero { color: #1e2a3a; font-size: 9px; display: block; margin-top: 2px; }
 
+        /* Filter chips */
+        .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+
+        .filter-chip {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            padding: 3px 10px;
+            border-radius: 3px;
+            border: 1px solid #2a3038;
+            background: #16191f;
+            color: #555;
+            cursor: pointer;
+            transition: all 150ms;
+            user-select: none;
+        }
+        .filter-chip:hover { color: #e0e0e0; border-color: #3a4048; }
+        .filter-chip.active { color: #e0e0e0; border-color: #555; background: #1e2330; }
+        .filter-chip.active-allow    { color: #22c55e; border-color: rgba(34,197,94,0.35);  background: rgba(34,197,94,0.08); }
+        .filter-chip.active-block    { color: #ef4444; border-color: rgba(239,68,68,0.35);  background: rgba(239,68,68,0.08); }
+        .filter-chip.active-timer    { color: #f59e0b; border-color: rgba(245,158,11,0.35); background: rgba(245,158,11,0.08); }
+        .filter-chip.active-schedule { color: #3b82f6; border-color: rgba(59,130,246,0.35); background: rgba(59,130,246,0.08); }
+
         @media (max-width: 540px) {
             .log-entry { grid-template-columns: 70px 70px 1fr; gap: 8px; }
             .log-details { display: none; }
@@ -224,11 +254,94 @@
     <!-- Today's totals by kid -->
     <div id="todaySummary" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;"></div>
 
+    <div class="filter-bar" id="kidFilterBar"></div>
+    <div class="filter-bar" id="typeFilterBar">
+        <span class="filter-chip active" onclick="setTypeFilter('all')">All</span>
+        <span class="filter-chip" onclick="setTypeFilter('allow')">Allow</span>
+        <span class="filter-chip" onclick="setTypeFilter('block')">Block</span>
+        <span class="filter-chip" onclick="setTypeFilter('timer')">Timer</span>
+        <span class="filter-chip" onclick="setTypeFilter('schedule')">Schedule</span>
+    </div>
+
     <div id="logList" class="log-list">
         <div class="empty-state">Loading...</div>
     </div>
 
     <script>
+        let cachedEntries = [];
+        let activeKidFilter = 'all';
+        let activeTypeFilter = 'all';
+
+        const ACTION_TYPE = {
+            'toggle-allow':    'allow',
+            'toggle-block':    'block',
+            'allow-all':       'allow',
+            'block-all':       'block',
+            'timed-allow':     'timer',
+            'timed-allow-all': 'timer',
+            'timer-expired':   'timer',
+            'timer-cancel':    'timer',
+            'extend-timer':    'timer',
+            'schedule-allow':  'schedule',
+            'schedule-block':  'schedule',
+            'schedule-toggle': 'schedule',
+            'schedules-saved': 'schedule',
+            'skip-next':       'schedule',
+            'skip-cancel':     'schedule',
+            'day-override':    'schedule',
+        };
+
+        function applyFilters() {
+            return cachedEntries.filter(e => {
+                if (activeKidFilter !== 'all' && e.kid !== activeKidFilter) return false;
+                if (activeTypeFilter !== 'all' && ACTION_TYPE[e.action] !== activeTypeFilter) return false;
+                return true;
+            });
+        }
+
+        function setKidFilter(name) {
+            activeKidFilter = name;
+            document.querySelectorAll('#kidFilterBar .filter-chip').forEach(chip => {
+                chip.className = 'filter-chip' + (chip.dataset.kid === name ? ' active' : '');
+            });
+            renderLog(applyFilters());
+        }
+
+        function setTypeFilter(type) {
+            activeTypeFilter = type;
+            document.querySelectorAll('#typeFilterBar .filter-chip').forEach(chip => {
+                const t = chip.dataset.type;
+                const isActive = t === type;
+                chip.className = 'filter-chip' + (isActive ? (type === 'all' ? ' active' : ` active-${type}`) : '');
+            });
+            renderLog(applyFilters());
+        }
+
+        function buildKidFilterBar(entries, kids) {
+            // Build ordered kid list from schedule kids, then any extra names from log
+            const kidNames = (kids || []).map(k => k.name);
+            for (const e of entries) {
+                if (e.kid && !kidNames.includes(e.kid)) kidNames.push(e.kid);
+            }
+            const bar = document.getElementById('kidFilterBar');
+            if (!kidNames.length) { bar.innerHTML = ''; return; }
+            bar.innerHTML = [
+                `<span class="filter-chip active" data-kid="all" onclick="setKidFilter('all')">All</span>`,
+                ...kidNames.map(n =>
+                    `<span class="filter-chip" data-kid="${n}" onclick="setKidFilter('${n}')">${n}</span>`)
+            ].join('');
+            // Re-apply active kid chip style
+            bar.querySelectorAll('.filter-chip').forEach(chip => {
+                if (chip.dataset.kid === activeKidFilter) chip.classList.add('active');
+            });
+        }
+
+        // Tag type filter chips with data attributes for setTypeFilter
+        document.querySelectorAll('#typeFilterBar .filter-chip').forEach((chip, i) => {
+            const types = ['all', 'allow', 'block', 'timer', 'schedule'];
+            chip.dataset.type = types[i];
+        });
+
         const ACTION_META = {
             'toggle-allow':    { label: 'ALLOWED',       cls: 'action-allow' },
             'toggle-block':    { label: 'BLOCKED',       cls: 'action-block' },
@@ -408,11 +521,12 @@
                 ]);
                 if (!logRes.ok) throw new Error();
                 const data = await logRes.json();
-                const entries = data.log || [];
+                cachedEntries = data.log || [];
                 const kids = schedRes.ok ? (await schedRes.json()).kids || [] : [];
-                renderWeekly(entries, kids);
-                renderSummary(entries, kids);
-                renderLog(entries);
+                renderWeekly(cachedEntries, kids);
+                renderSummary(cachedEntries, kids);
+                buildKidFilterBar(cachedEntries, kids);
+                renderLog(applyFilters());
                 document.getElementById('refreshInfo').textContent =
                     'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
             } catch {

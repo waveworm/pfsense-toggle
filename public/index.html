@@ -248,6 +248,46 @@
 
         .kid-timer-cancel:hover { color: #ef4444; }
 
+        .kid-timer-extend {
+            background: rgba(245, 158, 11, 0.15);
+            border: 1px solid rgba(245, 158, 11, 0.4);
+            border-radius: 3px;
+            color: #f59e0b;
+            cursor: pointer;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            padding: 1px 5px;
+            line-height: 1.4;
+        }
+        .kid-timer-extend:hover { background: rgba(245, 158, 11, 0.28); }
+        .kid-timer-actions { display: flex; align-items: center; gap: 4px; }
+
+        /* Device status dots */
+        .kid-devices {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-top: 2px;
+        }
+        .device-dot {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            color: #555;
+            font-family: 'Share Tech Mono', monospace;
+            cursor: default;
+        }
+        .device-dot .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #333;
+            flex-shrink: 0;
+        }
+        .device-dot.online .dot  { background: #22c55e; box-shadow: 0 0 4px #22c55e88; }
+        .device-dot.online       { color: #888; }
+
         /* Toggle Switch */
         .toggle-switch {
             display: flex;
@@ -496,6 +536,18 @@
         .kle-timed  { color: #7a6030; }
         .kle-neutral{ color: #444; }
 
+        /* Activity timeline bar */
+        .kid-timeline {
+            height: 5px;
+            border-radius: 3px;
+            overflow: hidden;
+            display: flex;
+            background: #1a1f28;
+        }
+        .tl-seg-allowed { background: rgba(34,197,94,0.55); }
+        .tl-seg-blocked { background: rgba(239,68,68,0.5); }
+        .tl-seg-unknown { background: #2a3038; }
+
         /* Toast */
         .toast {
             position: fixed;
@@ -583,8 +635,9 @@
         let homeRules = [];
         let autoRefreshInterval = null;
         let timedButtonsRendered = false;
-        let kidLogs = {};        // tracker → [{ ts, action, details }]
-        let kidMinutesToday = {}; // tracker → total timed minutes granted today
+        let kidLogs = {};           // tracker → [{ ts, action, details }]
+        let kidMinutesToday = {};   // tracker → total timed minutes granted today
+        let cachedTimelines = {};   // tracker → [{ start, end, state }]
 
         const LOG_ACTION_META = {
             'toggle-allow':    { label: 'Allowed',       cls: 'kle-allow' },
@@ -665,10 +718,17 @@
 
         async function fetchHomeRules() {
             try {
-                const response = await fetch('/api/home/rules');
-                if (!response.ok) throw new Error('API error');
-                const data = await response.json();
+                const [rulesRes, timelineRes] = await Promise.all([
+                    fetch('/api/home/rules'),
+                    fetch('/api/home/timeline')
+                ]);
+                if (!rulesRes.ok) throw new Error('API error');
+                const data = await rulesRes.json();
                 homeRules = data.rules || [];
+                if (timelineRes.ok) {
+                    const tData = await timelineRes.json();
+                    cachedTimelines = tData.timelines || {};
+                }
                 updateConnectionStatus(true);
                 if (!timedButtonsRendered) {
                     renderTimedButtons();
@@ -699,6 +759,20 @@
             return `${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]} ${time}`;
         }
 
+        function renderTimelineBar(tracker) {
+            const segs = cachedTimelines[tracker];
+            if (!segs || !segs.length) return '';
+            const now = Date.now();
+            const midnight = new Date(); midnight.setHours(0,0,0,0);
+            const dayLen = now - midnight.getTime();
+            if (dayLen <= 0) return '';
+            const html = segs.map(s => {
+                const flex = Math.max(0.01, (s.end - s.start) / dayLen);
+                return `<div class="tl-seg-${s.state}" style="flex:${flex}" title="${s.state}"></div>`;
+            }).join('');
+            return `<div class="kid-timeline">${html}</div>`;
+        }
+
         function renderKids() {
             const grid = document.getElementById('kidsGrid');
             grid.innerHTML = homeRules.map(kid => {
@@ -715,8 +789,21 @@
                 const timerRow = hasTimer ? `
                     <div class="kid-timer">
                         <span>&#9201; Until ${fmtTimeLabel(kid.timerEndTime)} &middot; <span id="cd-${kid.tracker}">${fmtCountdown(kid.timerEndTime)}</span> left</span>
-                        <button class="kid-timer-cancel" onclick="cancelTimer(${kid.tracker})" title="Cancel timer">&#x2715;</button>
+                        <div class="kid-timer-actions">
+                            <button class="kid-timer-extend" onclick="extendTimer(${kid.tracker}, 15)" title="+15 min">+15</button>
+                            <button class="kid-timer-extend" onclick="extendTimer(${kid.tracker}, 30)" title="+30 min">+30</button>
+                            <button class="kid-timer-cancel" onclick="cancelTimer(${kid.tracker})" title="Cancel timer">&#x2715;</button>
+                        </div>
                     </div>` : '';
+                const devicesRow = (kid.devices && kid.devices.length) ? `
+                    <div class="kid-devices">
+                        ${kid.devices.map(d => {
+                            const label = d.hostname && d.hostname !== d.mac ? d.hostname : d.mac.slice(-5);
+                            const title = `${d.mac}${d.ip ? ' · ' + d.ip : ''}${d.is_wired ? ' · wired' : ''}`;
+                            return `<span class="device-dot ${d.online ? 'online' : ''}" title="${title}"><span class="dot"></span>${label}</span>`;
+                        }).join('')}
+                    </div>` : '';
+                const timelineBar = renderTimelineBar(kid.tracker);
                 const schedInfoRow = kid.scheduleEnabled ? (
                     kid.scheduleWindowEnd && !hasSkip ? `<div class="sched-info active">Sched until ${fmtTimeLabel(kid.scheduleWindowEnd)}</div>` :
                     kid.scheduleNextStart && !hasSkip ? `<div class="sched-info next">Next: ${fmtTimeLabel(kid.scheduleNextStart)}</div>` : ''
@@ -759,6 +846,8 @@
                 return `
                 <div class="kid-card ${cardState}">
                     <div class="kid-name">${kid.name}</div>
+                    ${devicesRow}
+                    ${timelineBar}
 
                     <div class="kid-divider"></div>
 
@@ -937,6 +1026,22 @@
                 await fetchHomeRules();
             } catch (err) {
                 showToast('Failed to cancel timer', true);
+            }
+        }
+
+        async function extendTimer(tracker, minutes) {
+            try {
+                const res = await fetch(`/api/home/rules/${tracker}/extend-timer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ minutes })
+                });
+                if (!res.ok) throw new Error('Failed');
+                const data = await res.json();
+                showToast(data.message);
+                await fetchHomeRules();
+            } catch (err) {
+                showToast('Failed to extend timer', true);
             }
         }
 

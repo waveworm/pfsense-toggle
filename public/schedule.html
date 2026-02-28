@@ -360,6 +360,36 @@
             to   { transform: translateY(0);    opacity: 1; }
         }
 
+        /* ── Day override ── */
+        .day-override-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #1a1f28;
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 10px;
+            color: #555;
+        }
+
+        .btn-override {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            padding: 3px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            border: 1px solid #2a3038;
+            background: #1a1f28;
+            color: #555;
+            transition: all 150ms;
+        }
+        .btn-override:hover { color: #e0e0e0; border-color: #3a4048; }
+        .btn-override.active { color: #f59e0b; border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.1); }
+
         @media (max-width: 540px) {
             .window-row { gap: 8px; }
             .day-pills { gap: 2px; }
@@ -410,7 +440,13 @@
     <script>
         // ── Constants ───────────────────────────────────────────────
         const DAY_LABELS = ['Su', 'M', 'T', 'W', 'Th', 'F', 'Sa'];
+        const DAY_NAMES  = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
         const MAX_WINDOWS = 3;
+
+        function getTodayStr() {
+            const d = new Date();
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        }
 
         // ── State ────────────────────────────────────────────────────
         let kids = [];         // [{ tracker, name }]
@@ -456,6 +492,23 @@
             }
         }
 
+        function dayOverrideHtml(tracker, cfg) {
+            const actualDay  = new Date().getDay();
+            const actualName = DAY_NAMES[actualDay];
+            const override   = cfg.dayOverride;
+            const todayStr   = getTodayStr();
+            const isActive   = override && override.date === todayStr;
+
+            if (isActive) {
+                return `<span>Today: ${actualName} → treating as <span style="color:#f59e0b">${override.treatAs}</span></span>
+                        <button class="btn-override active" onclick="setDayOverride('${tracker}', null)">Clear</button>`;
+            }
+            const actualIsWeekend  = actualDay === 0 || actualDay === 6;
+            const suggestedTreatAs = actualIsWeekend ? 'weekday' : 'weekend';
+            return `<span>Today: ${actualName}</span>
+                    <button class="btn-override" onclick="setDayOverride('${tracker}', '${suggestedTreatAs}')">Treat as ${suggestedTreatAs.charAt(0).toUpperCase() + suggestedTreatAs.slice(1)}</button>`;
+        }
+
         // ── Render ───────────────────────────────────────────────────
         function render() {
             document.getElementById('kidList').innerHTML = kids.map(kid => {
@@ -481,6 +534,7 @@
                             </span>
                         </div>
                     </div>
+                    <div class="day-override-row">${dayOverrideHtml(kid.tracker, cfg)}</div>
                     <div class="windows-list" id="wins-${kid.tracker}">${winHtml}</div>
                     <button class="btn add-win-btn" ${canAdd ? '' : 'disabled'}
                         onclick="addWindow('${kid.tracker}')">
@@ -610,6 +664,21 @@
                 btn.disabled = false;
                 btn.textContent = 'Save Changes';
             }
+        }
+
+        // ── Day override ─────────────────────────────────────────────
+        async function setDayOverride(tracker, treatAs) {
+            try {
+                const res = await fetch(`/api/home/rules/${tracker}/day-override`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ treatAs })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error);
+                showToast(data.message);
+                await loadSchedules();
+            } catch (e) { showToast('Failed: ' + e.message, true); }
         }
 
         // ── Init ─────────────────────────────────────────────────────
