@@ -378,6 +378,7 @@ const KNOWN_MACS_FILE   = path.join(__dirname, 'known-macs.json');
 const BLOCKED_MACS_FILE = path.join(__dirname, 'blocked-macs.json');
 const kidKnownMacs   = new Map(); // tracker → Set of known MACs
 const kidBlockedMacs = new Map(); // tracker → [mac, ...] currently blocked
+const kidKickTimers  = new Map(); // tracker → { timeoutId, macs } — pending 5-min UniFi unblock
 
 function loadMacFiles() {
   for (const [file, map, asSet] of [
@@ -441,47 +442,101 @@ async function unifiApiCall(method, endpoint, body = null) {
   }
 }
 
-// Block a kid's devices on UniFi.
-// Queries the client list to find online devices → learns their MACs → blocks
-// all known MACs for this kid (catches offline devices seen in past sessions).
-async function unifiBlockKid(tracker, sourceAddr, kidName) {
+// Kick a kid's devices off UniFi for 5 minutes, then auto-unblock so devices
+// rejoin WiFi (but pfSense still blocks internet until parent manually allows).
+// Includes ALL known MACs — even excluded ones like wired PCs — so every device
+// disconnects cleanly and reconnects fresh when internet is restored.
+async function kickKidInUnifi(tracker, sourceAddr, kidName) {
   if (!CONFIG.UNIFI_URL) return;
+
+  // Cancel any existing kick timer for this kid
+  const existing = kidKickTimers.get(tracker);
+  if (existing) {
+    clearTimeout(existing.timeoutId);
+    kidKickTimers.delete(tracker);
+  }
+
   const ips = await resolveSourceIPs(sourceAddr);
   if (!ips.length) return;
 
-  // Learn any currently-online MACs for this kid
+  // Query UniFi clients to find online devices for this kid's IPs
   const clientsRes = await unifiApiCall('GET', `/api/clients?site=${CONFIG.UNIFI_SITE}`);
+  const onlineMacs = [];
   if (!clientsRes.error && Array.isArray(clientsRes)) {
-    const onlineMacs = ips.map(ip => clientsRes.find(c => c.ip === ip)?.mac).filter(Boolean);
-    learnMacs(tracker, onlineMacs);
+    ips.map(ip => clientsRes.find(c => c.ip === ip)?.mac).filter(Boolean)
+       .forEach(m => onlineMacs.push(m));
+    learnMacs(tracker, onlineMacs); // persist non-excluded MACs to known-macs store
   }
 
-  // Block all known MACs (online now + seen in past), skipping excluded ones
-  const allMacs = [...(kidKnownMacs.get(tracker) || [])].filter(m => !unifiExcludedMacs.has(m.toLowerCase()));
-  if (!allMacs.length) return;
-  const blocked = [];
-  for (const mac of allMacs) {
+  // Build MAC set: all known MACs + any online MACs not yet in known set
+  // (includes excluded MACs — e.g. wired PCs — for the kick)
+  const macSet = new Set([...(kidKnownMacs.get(tracker) || []), ...onlineMacs]);
+  if (!macSet.size) return;
+
+  const kicked = [];
+  for (const mac of macSet) {
     const r = await unifiApiCall('POST', '/api/clients/block', { mac, site: CONFIG.UNIFI_SITE });
     if (!r.error) {
-      blocked.push(mac);
-      console.log(`unifiBlock: ${kidName} mac=${mac} — blocked`);
+      kicked.push(mac);
+      console.log(`kick: ${kidName} mac=${mac} — blocked`);
     } else {
-      console.error(`unifiBlock: failed for ${kidName} mac=${mac} — ${r.message || r.detail}`);
+      console.error(`kick: failed for ${kidName} mac=${mac} — ${r.message || r.detail}`);
     }
   }
-  if (blocked.length) { kidBlockedMacs.set(tracker, blocked); saveBlockedMacs(); }
+  if (!kicked.length) return;
+
+  // Cache kicked MACs so early-allow (before timer fires) can unblock them
+  kidBlockedMacs.set(tracker, kicked);
+  saveBlockedMacs();
+
+  // Auto-unblock after 5 minutes: devices rejoin WiFi, pfSense still blocks internet
+  const timeoutId = setTimeout(async () => {
+    kidKickTimers.delete(tracker);
+    console.log(`kick: auto-unblocking ${kidName} after 5-min kick`);
+    try {
+      for (const mac of kicked) {
+        const r = await unifiApiCall('POST', '/api/clients/unblock', { mac, site: CONFIG.UNIFI_SITE });
+        if (!r.error) console.log(`kick: ${kidName} mac=${mac} — unblocked after 5-min kick`);
+        else console.error(`kick: unblock failed for ${kidName} mac=${mac} — ${r.message || r.detail}`);
+      }
+      logAction('unifi-auto-unblock', kidName, 'Devices rejoined WiFi after 5-min kick (pfSense still blocking)');
+    } catch (err) {
+      console.error(`kick: auto-unblock failed for ${kidName}:`, err.message);
+    }
+  }, 5 * 60 * 1000);
+
+  kidKickTimers.set(tracker, { timeoutId, macs: kicked });
+  console.log(`kick: ${kidName} — ${kicked.length} MACs blocked, auto-unblock in 5 min`);
 }
 
 // Unblock a kid's devices on UniFi.
-// Uses the blocked-MACs cache; also unblocks any other known MACs as a safety net.
+// If a 5-min kick timer is still pending (parent allowed before it fired), cancel
+// it and unblock all kicked MACs (including excluded ones). Otherwise fall back
+// to the cached blocked-MACs list.
 async function unifiUnblockKid(tracker, kidName, sourceAddr = null) {
   if (!CONFIG.UNIFI_URL) return;
 
-  // Union of cached blocked MACs + all known MACs, skipping excluded ones
+  // Cancel any pending kick timer and unblock those MACs (includes excluded ones)
+  const kickTimer = kidKickTimers.get(tracker);
+  if (kickTimer) {
+    clearTimeout(kickTimer.timeoutId);
+    kidKickTimers.delete(tracker);
+    for (const mac of kickTimer.macs) {
+      const r = await unifiApiCall('POST', '/api/clients/unblock', { mac, site: CONFIG.UNIFI_SITE });
+      if (!r.error) console.log(`unifiUnblock: ${kidName} mac=${mac} — unblocked (early allow)`);
+      else console.error(`unifiUnblock: failed for ${kidName} mac=${mac} — ${r.message || r.detail}`);
+    }
+    kidBlockedMacs.delete(tracker);
+    saveBlockedMacs();
+    return;
+  }
+
+  // No pending kick timer — use cached MACs (kidBlockedMacs has all kicked MACs
+  // including excluded ones; kidKnownMacs fallback filters excluded for safety)
   const toUnblock = new Set([
     ...(kidBlockedMacs.get(tracker) || []),
-    ...(kidKnownMacs.get(tracker) || []),
-  ].filter(m => !unifiExcludedMacs.has(m.toLowerCase())));
+    ...[...(kidKnownMacs.get(tracker) || [])].filter(m => !unifiExcludedMacs.has(m.toLowerCase())),
+  ]);
 
   // If we still have nothing, try IP lookup as last resort
   if (!toUnblock.size && sourceAddr) {
@@ -538,7 +593,7 @@ async function blockKidNow(tracker) {
       await pfsenseApiCall('/api/v2/firewall/rule', 'PATCH', { id: rule.id, disabled: false });
       await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
       await killStatesForSource(ruleSourceAddr(rule), kidName);
-      await unifiBlockKid(tracker, ruleSourceAddr(rule), kidName);
+      await kickKidInUnifi(tracker, ruleSourceAddr(rule), kidName);
       logAction('timer-expired', kidName, 'Timer ended — blocked');
       sendNotif('Timer Expired', `${kidName}'s internet timer ended — now blocked`);
     }
@@ -666,7 +721,7 @@ async function enforceSchedules() {
       await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
       for (const { rule, name, tracker } of toKillStates) {
         await killStatesForSource(ruleSourceAddr(rule), name);
-        await unifiBlockKid(tracker, ruleSourceAddr(rule), name);
+        await kickKidInUnifi(tracker, ruleSourceAddr(rule), name);
       }
     }
   } catch (err) {
@@ -1027,7 +1082,7 @@ app.post('/api/home/rules/:tracker/toggle', async (req, res) => {
     // Kill existing states so blocking takes effect immediately (e.g. iMessage)
     if (blockEnabled) {
       await killStatesForSource(ruleSourceAddr(currentRule), configRule.name);
-      await unifiBlockKid(tracker, ruleSourceAddr(currentRule), configRule.name);
+      await kickKidInUnifi(tracker, ruleSourceAddr(currentRule), configRule.name);
     } else {
       await unifiUnblockKid(tracker, configRule.name, ruleSourceAddr(currentRule));
     }
@@ -1123,7 +1178,7 @@ app.post('/api/home/block-all', async (req, res) => {
       await pfsenseApiCall('/api/v2/firewall/apply', 'POST');
       for (const { rule, name, tracker } of toKillStates) {
         await killStatesForSource(ruleSourceAddr(rule), name);
-        await unifiBlockKid(tracker, ruleSourceAddr(rule), name);
+        await kickKidInUnifi(tracker, ruleSourceAddr(rule), name);
       }
     }
     logAction('block-all', null, `${changed} kids blocked`);
